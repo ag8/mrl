@@ -4,14 +4,15 @@ import gym
 import time
 
 
-def make_ddpg_agent(base_config=default_ddpg_config,
-                    args=Namespace(env='InvertedPendulum-v2',
-                                   tb='',
-                                   parent_folder='/tmp/mrl',
-                                   layers=(256, 256),
-                                   num_envs=None),
-                    agent_name_attrs=['env', 'seed', 'tb'],
-                    **kwargs):
+def make_dqn_agent(base_config=default_dqn_config,
+                   args=Namespace(env='InvertedPendulum-v2',
+                                  tb='',
+                                  parent_folder='/tmp/mrl',
+                                  layers=(256, 256),
+                                  num_envs=None),
+                   agent_name_attrs=['env', 'seed', 'tb'],
+                   **kwargs):
+
 
     if callable(base_config):  # If the base_config parameter is a function, make sure to call it
         base_config = base_config()
@@ -25,7 +26,7 @@ def make_ddpg_agent(base_config=default_ddpg_config,
 
     # set the prefix (todo: why?)
     if not hasattr(args, 'prefix'):
-        args.prefix = 'ddpg'
+        args.prefix = 'dqn'
 
     # set whatever this is (todo: why?)
     if not args.tb:
@@ -39,13 +40,12 @@ def make_ddpg_agent(base_config=default_ddpg_config,
         k: v
         for k, v in dict(module_train=StandardTrain(),
                          module_eval=EpisodicEval(),
-                         module_policy=ActorPolicy(),
+                         module_policy=QValuePolicy(),
                          module_logger=Logger(),
                          module_state_normalizer=Normalizer(MeanStdNormalizer()),
                          module_replay=OnlineHERBuffer(),
-                         module_action_noise=ContinuousActionNoise(GaussianProcess,
-                                                                   std=ConstantSchedule(config.action_noise)),
-                         module_algorithm=DDPG()).items() if not k in config
+                         module_action_noise=None,
+                         module_algorithm=DQN()).items() if not k in config
     }
 
     config.update(base_modules)
@@ -84,16 +84,14 @@ def make_ddpg_agent(base_config=default_ddpg_config,
     return config
 
 
-
 def make_random_agent(base_config=default_ddpg_config,
-                    args=Namespace(env='InvertedPendulum-v2',
-                                   tb='',
-                                   parent_folder='/tmp/mrl',
-                                   layers=(256, 256),
-                                   num_envs=None),
-                    agent_name_attrs=['env', 'seed', 'tb'],
-                    **kwargs):
-
+                      args=Namespace(env='InvertedPendulum-v2',
+                                     tb='',
+                                     parent_folder='/tmp/mrl',
+                                     layers=(256, 256),
+                                     num_envs=None),
+                      agent_name_attrs=['env', 'seed', 'tb'],
+                      **kwargs):
     if callable(base_config):  # If the base_config parameter is a function, make sure to call it
         base_config = base_config()
     config = base_config
