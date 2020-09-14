@@ -92,7 +92,16 @@ class OnlineHERBuffer(mrl.Module):
                 self.buffer.add_trajectory(*trajectory)
                 self._subbuffers[i] = []
 
-    def sample(self, batch_size, to_torch=True):
+    def sample(self, batch_size, to_torch=True, include_dones=False):
+        """
+        Sample the replay buffer.
+
+        :param batch_size: the batch size
+        :param to_torch: whether to run self.torch() on the returned values (default True)
+        :param include_dones: whether to return the tensor of dones (useful for distributional learning, default False)
+        :return: a quintuple containing (states, actions, rewards, next_states, gammas).
+        """
+        # Sample either randomly or via prioritized replay, depending on the modules
         if hasattr(self, 'prioritized_replay'):
             batch_idxs = self.prioritized_replay(batch_size)
         else:
@@ -203,11 +212,19 @@ class OnlineHERBuffer(mrl.Module):
                 next_states, update=False).astype(np.float32)
 
         if to_torch:
-            return (self.torch(states), self.torch(actions),
-                    self.torch(rewards), self.torch(next_states),
-                    self.torch(gammas))
+            if include_dones:
+                return (self.torch(states), self.torch(actions),
+                        self.torch(rewards), self.torch(next_states),
+                        self.torch(gammas), self.torch(dones))
+            else:
+                return (self.torch(states), self.torch(actions),
+                        self.torch(rewards), self.torch(next_states),
+                        self.torch(gammas))
         else:
-            return (states, actions, rewards, next_states, gammas)
+            if include_dones:
+                return (states, actions, rewards, next_states, gammas, dones)
+            else:
+                return (states, actions, rewards, next_states, gammas)
 
     def __len__(self):
         return len(self.buffer)
