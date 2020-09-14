@@ -6,6 +6,7 @@ import time
 
 from mrl.modules.train import DoNothing
 
+
 def make_dqn_agent(base_config=default_dqn_config,
                    args=Namespace(env='InvertedPendulum-v2',
                                   tb='',

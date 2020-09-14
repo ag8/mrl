@@ -141,8 +141,10 @@ class DQN(BaseQLearning):
         # We detach it since it's not relevant for gradient computations
         q_next = self.qvalue_target(next_states).detach()
 
+        # Minimum modification to get double q learning to work
+        # (Hasselt, Guez, and Silver, 2016: https://arxiv.org/pdf/1509.06461.pdf)
         if self.config.double_q:
-            best_actions = torch.argmax(self.qvalue(next_states), dim=-1, keepdims=True)
+            best_actions = torch.argmax(self.qvalue(next_states), dim=-1, keepdim=True)
             q_next = q_next.gather(-1, best_actions)
         else:
             q_next = q_next.max(-1, keepdims=True)[0]  # Assuming action dim is the last dimension

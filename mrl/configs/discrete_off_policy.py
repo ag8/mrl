@@ -28,6 +28,7 @@ default_dqn_config = lambda: AnnotatedAttrDict(
     double_q=(False, 'Use Double DQN or not. Default: False'),
     activ=('gelu', 'activation to use for hidden layers in networks'),
     curiosity_beta=(-3., 'beta to use for curiosity_alpha module'),
+    save_replay_buf=(False, 'Whether to save the replay buffer. Default: False'),
 
     # Below are args to other modules (maybe should live in those modules?)
     seed=(0, 'random seed'),

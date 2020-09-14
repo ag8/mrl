@@ -6,11 +6,11 @@ def test_dqn():
 
     print("Making agent...")
     config = make_dqn_agent(args=Namespace(env='InvertedPendulum-v2',
-                                            tb='',
-                                            parent_folder='/tmp/mrl',
-                                            layers=(32, 1),
-                                            num_envs=1,
-                                            device='cpu'))
+                                           tb='',
+                                           parent_folder='/tmp/mrl',
+                                           layers=(32, 1),
+                                           num_envs=1,
+                                           device='cpu'))
     agent = mrl.config_to_agent(config)
     print("Made agent successfully!")
 
@@ -18,6 +18,7 @@ def test_dqn():
     agent.train(num_steps=10)
     assert len(agent.eval(num_episodes=1).rewards) == 1
     print("Trained agent...")
+    agent.eval(num_episodes=10)
 
 
 test_dqn()
