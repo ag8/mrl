@@ -1,8 +1,10 @@
+from mrl.algorithms.discrete_off_policy import RandomPolicy
 from mrl.import_all import *
 from argparse import Namespace
 import gym
 import time
 
+from mrl.modules.train import DoNothing
 
 def make_dqn_agent(base_config=default_dqn_config,
                    args=Namespace(env='InvertedPendulum-v2',
@@ -12,8 +14,6 @@ def make_dqn_agent(base_config=default_dqn_config,
                                   num_envs=None),
                    agent_name_attrs=['env', 'seed', 'tb'],
                    **kwargs):
-
-
     if callable(base_config):  # If the base_config parameter is a function, make sure to call it
         base_config = base_config()
     config = base_config
@@ -70,13 +70,10 @@ def make_dqn_agent(base_config=default_dqn_config,
     layer_norm = nn.LayerNorm if (hasattr(args, 'layer_norm') and args.layer_norm) else nn.Identity
 
     e = config.module_eval_env
-    config.module_actor = PytorchModel(
-        'actor',
+    config.module_qvalue = PytorchModel(
+        'qvalue',
         lambda: Actor(FCBody(e.state_dim + e.goal_dim, args.layers, layer_norm, make_activ(config.activ)), e.action_dim,
                       e.max_action))
-    config.module_critic = PytorchModel(
-        'critic', lambda: Critic(
-            FCBody(e.state_dim + e.goal_dim + e.action_dim, args.layers, layer_norm, make_activ(config.activ)), 1))
 
     if e.goal_env:
         config.never_done = True  # important for standard Gym goal environments, which are never done
@@ -116,15 +113,14 @@ def make_random_agent(base_config=default_ddpg_config,
 
     base_modules = {
         k: v
-        for k, v in dict(module_train=StandardTrain(),
+        for k, v in dict(module_train=DoNothing(),
                          module_eval=EpisodicEval(),
-                         module_policy=ActorPolicy(),
+                         module_policy=RandomPolicy(),
                          module_logger=Logger(),
-                         module_state_normalizer=Normalizer(MeanStdNormalizer()),
-                         module_replay=OnlineHERBuffer(),
-                         module_action_noise=ContinuousActionNoise(GaussianProcess,
-                                                                   std=ConstantSchedule(config.action_noise)),
-                         module_algorithm=DDPG()).items() if not k in config
+                         module_state_normalizer=None,
+                         module_replay=None,
+                         module_action_noise=None,
+                         module_algorithm=None).items() if not k in config
     }
 
     config.update(base_modules)
@@ -159,62 +155,5 @@ def make_random_agent(base_config=default_ddpg_config,
 
     if e.goal_env:
         config.never_done = True  # important for standard Gym goal environments, which are never done
-
-    return config
-
-
-def make_td3_agent(base_config=spinning_up_td3_config,
-                   args=Namespace(env='InvertedPendulum-v2',
-                                  tb='',
-                                  prefix='td3',
-                                  parent_folder='/tmp/mrl',
-                                  layers=(256, 256),
-                                  num_envs=None),
-                   agent_name_attrs=['env', 'seed', 'tb'],
-                   **kwargs):
-    config = make_ddpg_agent(base_config, args, agent_name_attrs, **kwargs)
-    del config.module_algorithm
-    config.module_algorithm = TD3()
-
-    layer_norm = nn.LayerNorm if (hasattr(args, 'layer_norm') and args.layer_norm) else nn.Identity
-
-    e = config.module_eval_env
-    config.module_critic2 = PytorchModel('critic2',
-                                         lambda: Critic(
-                                             FCBody(e.state_dim + e.goal_dim + e.action_dim, args.layers, layer_norm,
-                                                    make_activ(config.activ), False), 1, False))
-
-    return config
-
-
-def make_sac_agent(base_config=spinning_up_sac_config,
-                   args=Namespace(env='InvertedPendulum-v2',
-                                  tb='',
-                                  prefix='sac',
-                                  parent_folder='/tmp/mrl',
-                                  layers=(256, 256),
-                                  num_envs=None),
-                   agent_name_attrs=['env', 'seed', 'tb'],
-                   **kwargs):
-    config = make_ddpg_agent(base_config, args, agent_name_attrs, **kwargs)
-    e = config.module_eval_env
-    layer_norm = nn.LayerNorm if (hasattr(args, 'layer_norm') and args.layer_norm) else nn.Identity
-
-    del config.module_actor
-    del config.module_action_noise
-    del config.module_policy
-    config.module_policy = StochasticActorPolicy()
-    del config.module_algorithm
-    config.module_algorithm = SAC()
-
-    config.module_actor = PytorchModel(
-        'actor',
-        lambda: StochasticActor(FCBody(e.state_dim + e.goal_dim, args.layers, layer_norm, make_activ(config.activ)),
-                                e.action_dim, e.max_action, log_std_bounds=(-20, 2)))
-
-    config.module_critic2 = PytorchModel('critic2',
-                                         lambda: Critic(
-                                             FCBody(e.state_dim + e.goal_dim + e.action_dim, args.layers, layer_norm,
-                                                    make_activ(config.activ), False), 1, False))
 
     return config

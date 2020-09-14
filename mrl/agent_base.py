@@ -339,6 +339,13 @@ class Module(object):
 
 
 def config_to_agent(config_dict: dict):
+    '''
+    The important method that actually creates the Agent (agent factory)
+
+    :param config_dict: the dictionary of configuration parameters
+    :return: the agent!!!!!
+    '''
+
     module_list = []
     config = AttrDict()
     for k, v in config_dict.items():

@@ -97,3 +97,27 @@ def debug_vectorized_experience(state, action, next_state, reward, done, info):
     experience.reset_state = next_state
 
     return next_state, experience
+
+
+class DoNothing(mrl.Module):
+    def __init__(self):
+        super().__init__('train', required_agent_modules=['env', 'policy', 'optimize'], locals=locals())
+
+    def _setup(self):
+        assert hasattr(self.config, 'optimize_every')
+        self.optimize_every = self.config.optimize_every
+        self.env_steps = 0
+        self.reset_idxs = []
+
+    def __call__(self, num_steps: int, render=False, dont_optimize=False, dont_train=False):
+        pass
+
+    def reset_next(self, idxs):
+        """Resets specified envs on next step"""
+        self.reset_idxs = idxs
+
+    def save(self, save_folder):
+        self._save_props(['env_steps'], save_folder)
+
+    def load(self, save_folder):
+        self._load_props(['env_steps'], save_folder)

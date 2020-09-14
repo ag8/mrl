@@ -1,13 +1,11 @@
-from mrl.configs.make_continuous_agents import *
-import numpy as np
-import pytest
+from mrl.configs.make_discrete_agents import *
 
 
-def test_ddpg():
-    print("About to test the DDPG!")
+def test_dqn():
+    print("About to test the DQN!")
 
     print("Making agent...")
-    config = make_ddpg_agent(args=Namespace(env='InvertedPendulum-v2',
+    config = make_dqn_agent(args=Namespace(env='InvertedPendulum-v2',
                                             tb='',
                                             parent_folder='/tmp/mrl',
                                             layers=(32, 1),
@@ -22,4 +20,4 @@ def test_ddpg():
     print("Trained agent...")
 
 
-test_ddpg()
+test_dqn()
