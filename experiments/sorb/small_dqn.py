@@ -5,7 +5,7 @@ def test_dqn():
     print("About to test the DQN!")
 
     print("Making agent...")
-    config = make_dqn_agent(args=Namespace(env='InvertedPendulum-v2',
+    config = make_dqn_agent(args=Namespace(env='CartPole-v1',
                                            tb='',
                                            parent_folder='/tmp/mrl',
                                            layers=(32, 1),
@@ -15,8 +15,9 @@ def test_dqn():
     print("Made agent successfully!")
 
     print("Training agent...")
-    agent.train(num_steps=10)
+    agent.train(num_steps=50000)
     assert len(agent.eval(num_episodes=1).rewards) == 1
+    agent.train(num_steps=10000, render=True)
     print("Trained agent...")
     agent.eval(num_episodes=10)
 

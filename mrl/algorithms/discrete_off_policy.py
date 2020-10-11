@@ -49,6 +49,7 @@ class QValuePolicy(mrl.Module):
 
         if self.training and not greedy and np.random.random() < self.config.random_action_prob(
                 steps=self.config.env_steps):
+            # print("The action space is: " + str(self.env.action_space) + " with " + str(self.env.action_space.n) + " choices")
             action = np.random.randint(self.env.action_space.n, size=[self.env.num_envs])
         else:
             action = np.argmax(q_values, -1)  # Convert to int
@@ -136,7 +137,6 @@ class DQN(BaseQLearning):
         :param gammas:
         :return: nothing
         """
-
         # The Q_next value is what the target q network applied to the next states gives us
         # We detach it since it's not relevant for gradient computations
         q_next = self.qvalue_target(next_states).detach()
@@ -163,7 +163,8 @@ class DQN(BaseQLearning):
         q = self.qvalue(states)
 
         # Index the rows of the q-values by the batch-list of actions
-        q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
+        # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
+        q = q.gather(0, actions.unsqueeze(-1).to(torch.int64))
 
         # Get the squared bellman error
         td_loss = F.mse_loss(q, target)
@@ -197,6 +198,8 @@ class DistributionalQNetwork(BaseQLearning):
         """
         super().__init__()
 
+        print("INITING A DDQN!")
+
         self.num_atoms = num_atoms
         self.v_max = v_max
         self.v_min = v_min
@@ -210,7 +213,8 @@ class DistributionalQNetwork(BaseQLearning):
 
         next_distribution = self.qvalue_target(next_state).detach() * support
         next_action = next_distribution.sum(2).max(1)[1]
-        next_action = next_action.unsqueeze(1).unsqueeze(1).expand(next_distribution.size(0), 1, next_distribution.size(2))
+        next_action = next_action.unsqueeze(1).unsqueeze(1).expand(next_distribution.size(0), 1,
+                                                                   next_distribution.size(2))
         next_distribution = next_distribution.gather(1, next_action).squeeze(1)
 
         rewards = rewards.unsqueeze(1).expand_as(next_distribution)
@@ -229,8 +233,10 @@ class DistributionalQNetwork(BaseQLearning):
 
         # Projection code based on Yerzat (2017)
         projected_distribution = torch.zeros(next_distribution.size())
-        projected_distribution.view(-1).index_add_(0, (m_l + offset).view(-1), (next_distribution * (m_u.float() - b)).view(-1))
-        projected_distribution.view(-1).index_add_(0, (m_u + offset).view(-1), (next_distribution * (b - m_l.float())).view(-1))
+        projected_distribution.view(-1).index_add_(0, (m_l + offset).view(-1),
+                                                   (next_distribution * (m_u.float() - b)).view(-1))
+        projected_distribution.view(-1).index_add_(0, (m_u + offset).view(-1),
+                                                   (next_distribution * (b - m_l.float())).view(-1))
 
         return projected_distribution
 
@@ -245,6 +251,7 @@ class DistributionalQNetwork(BaseQLearning):
         :param gammas:
         :return: nothing
         """
+        print("Optimizing from batch")
 
         # The Q_next value is what the target q network applied to the next states gives us
         # We detach it since it's not relevant for gradient computations
@@ -271,6 +278,9 @@ class DistributionalQNetwork(BaseQLearning):
         # Get the distributions for both the normal and target networks over the next states
         z = self.qvalue(next_states)
         z_ = self.qvalue_target(next_states)
+
+        print("Writing!!!")
+        self.logger.add_histogram("Distribution", z)
 
         # Get the optimal actions (clever code from Yu, 2017)
         z_concat = np.vstack(z)

@@ -73,8 +73,8 @@ def make_dqn_agent(base_config=default_dqn_config,
     e = config.module_eval_env
     config.module_qvalue = PytorchModel(
         'qvalue',
-        lambda: Actor(FCBody(e.state_dim + e.goal_dim, args.layers, layer_norm, make_activ(config.activ)), e.action_dim,
-                      e.max_action))
+        lambda: FCBody(e.state_dim, args.layers, layer_norm, make_activ(config.activ))
+    )
 
     if e.goal_env:
         config.never_done = True  # important for standard Gym goal environments, which are never done
@@ -83,13 +83,13 @@ def make_dqn_agent(base_config=default_dqn_config,
 
 
 def make_distributionaldqn_agent(base_config=default_dqn_config,
-                   args=Namespace(env='InvertedPendulum-v2',
-                                  tb='',
-                                  parent_folder='/tmp/mrl',
-                                  layers=(256, 256),
-                                  num_envs=None),
-                   agent_name_attrs=['env', 'seed', 'tb'],
-                   **kwargs):
+                                 args=Namespace(env='InvertedPendulum-v2',
+                                                tb='',
+                                                parent_folder='/tmp/mrl',
+                                                layers=(256, 256),
+                                                num_envs=None),
+                                 agent_name_attrs=['env', 'seed', 'tb'],
+                                 **kwargs):
     if callable(base_config):  # If the base_config parameter is a function, make sure to call it
         base_config = base_config()
     config = base_config
@@ -121,7 +121,8 @@ def make_distributionaldqn_agent(base_config=default_dqn_config,
                          module_state_normalizer=Normalizer(MeanStdNormalizer()),
                          module_replay=OnlineHERBuffer(),
                          module_action_noise=None,
-                         module_algorithm=DistributionalQNetwork(num_atoms=5, v_min=-10, v_max=20)).items() if not k in config
+                         module_algorithm=DistributionalQNetwork(num_atoms=5, v_min=-10, v_max=20)).items() if
+        not k in config
     }
 
     config.update(base_modules)
