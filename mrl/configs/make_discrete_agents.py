@@ -1,4 +1,4 @@
-from mrl.algorithms.discrete_off_policy import RandomPolicy, DistributionalQNetwork
+from mrl.algorithms.discrete_off_policy import DistributionalQNetwork
 from mrl.import_all import *
 from argparse import Namespace
 import gym
@@ -73,7 +73,7 @@ def make_dqn_agent(base_config=default_dqn_config,
     e = config.module_eval_env
     config.module_qvalue = PytorchModel(
         'qvalue',
-        lambda: FCBody(e.state_dim, args.layers, layer_norm, make_activ(config.activ))
+        lambda: Critic(FCBody(e.state_dim, args.layers, layer_norm, make_activ(config.activ)), e.action_dim)
     )
 
     if e.goal_env:
@@ -83,6 +83,9 @@ def make_dqn_agent(base_config=default_dqn_config,
 
 
 def make_distributionaldqn_agent(base_config=default_dqn_config,
+                                 num_atoms=5,
+                                 v_min=-1,
+                                 v_max=1,
                                  args=Namespace(env='InvertedPendulum-v2',
                                                 tb='',
                                                 parent_folder='/tmp/mrl',
@@ -121,7 +124,8 @@ def make_distributionaldqn_agent(base_config=default_dqn_config,
                          module_state_normalizer=Normalizer(MeanStdNormalizer()),
                          module_replay=OnlineHERBuffer(),
                          module_action_noise=None,
-                         module_algorithm=DistributionalQNetwork(num_atoms=5, v_min=-10, v_max=20)).items() if
+                         module_algorithm=DistributionalQNetwork(num_atoms=num_atoms, v_min=v_min, v_max=v_max)).items()
+        if
         not k in config
     }
 
@@ -149,8 +153,8 @@ def make_distributionaldqn_agent(base_config=default_dqn_config,
     e = config.module_eval_env
     config.module_qvalue = PytorchModel(
         'qvalue',
-        lambda: Actor(FCBody(e.state_dim + e.goal_dim, args.layers, layer_norm, make_activ(config.activ)), e.action_dim,
-                      e.max_action))
+        lambda: Critic(FCBody(e.state_dim, args.layers, layer_norm, make_activ(config.activ)), e.action_dim * num_atoms)
+    )
 
     if e.goal_env:
         config.never_done = True  # important for standard Gym goal environments, which are never done

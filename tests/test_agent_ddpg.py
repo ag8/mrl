@@ -7,7 +7,7 @@ def test_ddpg():
     print("About to test the DDPG!")
 
     print("Making agent...")
-    config = make_ddpg_agent(args=Namespace(env='InvertedPendulum-v2',
+    config = make_ddpg_agent(args=Namespace(env='BipedalWalker-v3',
                                             tb='',
                                             parent_folder='/tmp/mrl',
                                             layers=(32, 1),
@@ -17,7 +17,8 @@ def test_ddpg():
     print("Made agent successfully!")
 
     print("Training agent...")
-    agent.train(num_steps=10)
+    agent.train(num_steps=100000)
+    agent.train(num_steps=10000, render=True)
     assert len(agent.eval(num_episodes=1).rewards) == 1
     print("Trained agent...")
 

@@ -1,3 +1,5 @@
+import math
+
 import mrl
 from mrl.utils.misc import soft_update, flatten_state
 from mrl.modules.model import PytorchModel
@@ -164,7 +166,7 @@ class DQN(BaseQLearning):
 
         # Index the rows of the q-values by the batch-list of actions
         # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
-        q = q.gather(0, actions.unsqueeze(-1).to(torch.int64))
+        q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
 
         # Get the squared bellman error
         td_loss = F.mse_loss(q, target)
@@ -198,45 +200,30 @@ class DistributionalQNetwork(BaseQLearning):
         """
         super().__init__()
 
-        print("INITING A DDQN!")
-
         self.num_atoms = num_atoms
         self.v_max = v_max
         self.v_min = v_min
+        self.value_range = torch.tensor(v_max - v_min)
         self.delta_z = (self.v_max - self.v_min) / float(self.num_atoms - 1)
         self.z = [self.v_min + i * self.delta_z for i in range(self.num_atoms)]
 
-    def __project_next_state_value_distribution(self, next_state, rewards, dones):
-        batch_size = next_state.size(0)
-
-        support = torch.linspace(self.v_min, self.v_max, self.num_atoms)
-
-        next_distribution = self.qvalue_target(next_state).detach() * support
-        next_action = next_distribution.sum(2).max(1)[1]
-        next_action = next_action.unsqueeze(1).unsqueeze(1).expand(next_distribution.size(0), 1,
-                                                                   next_distribution.size(2))
-        next_distribution = next_distribution.gather(1, next_action).squeeze(1)
-
-        rewards = rewards.unsqueeze(1).expand_as(next_distribution)
-        dones = dones.unsqueeze(1).expand_as(next_distribution)
-        support = support.unsqueeze(0).expand_as(next_distribution)
-
-        # The (1 - dones) cleverly considers as 0 anything in a terminal state
-        Tz = rewards + (1 - dones) * self.gamma * self.z
-        Tz = Tz.clamp(min=self.v_min, max=self.v_max)
-        b = (Tz - self.v_min) / self.delta_z
-        m_l = b.floor().long()
-        m_u = b.ceil().long()
-
-        offset = torch.linspace(0, (batch_size - 1) * self.num_atoms, batch_size).long() \
-            .unsqueeze(1).expand(batch_size, self.num_atoms)
-
-        # Projection code based on Yerzat (2017)
+    def __project_next_state_value_distribution(self, states, actions, rewards, next_states, gammas, dones,
+                                                next_distribution, best_actions):
+        batch_size = states.size(0)
         projected_distribution = torch.zeros(next_distribution.size())
-        projected_distribution.view(-1).index_add_(0, (m_l + offset).view(-1),
-                                                   (next_distribution * (m_u.float() - b)).view(-1))
-        projected_distribution.view(-1).index_add_(0, (m_u + offset).view(-1),
-                                                   (next_distribution * (b - m_l.float())).view(-1))
+
+        for i in range(batch_size):
+            for j in range(self.num_atoms):
+                # Compute the projection of ˆTz_j onto the support {z_i}
+                Tz_j = (rewards[i] + (1 - dones[i]) * gammas[i] * self.z[j]).clamp(min=self.v_min, max=self.v_max)
+                b_j = (Tz_j - self.v_min) / self.delta_z
+                l, u = math.floor(b_j), math.ceil(b_j)
+
+                # Distribute probability of ˆTz_j
+                projected_distribution[i][actions[i].long()][int(l)] += (next_distribution[i][best_actions[i][j]][j] * (
+                        u - b_j)).squeeze(0)
+                projected_distribution[i][actions[i].long()][int(u)] += (next_distribution[i][best_actions[i][j]][j] * (
+                        b_j - l)).squeeze(0)
 
         return projected_distribution
 
@@ -244,53 +231,57 @@ class DistributionalQNetwork(BaseQLearning):
         """
         The optimization method that gets called from _optimize in the BaseQLearning module.
 
-        :param states:
-        :param actions:
-        :param rewards:
-        :param next_states:
-        :param gammas:
+        :param states: the states, of size [batch_size, num_values]
+        :param actions: the actions, of size [batch_size]
+        :param rewards: the rewards, of size [batch_size, 1]
+        :param next_states: the next states, of size [batch_size, num_values]
+        :param gammas: the discount factors, of size [batch_size, 1]
+        :param dones: the done states, of size [batch_size, 1]
         :return: nothing
         """
-        print("Optimizing from batch")
 
-        # The Q_next value is what the target q network applied to the next states gives us
-        # We detach it since it's not relevant for gradient computations
-        q_next = self.qvalue_target(next_states).detach()
+        # Get some useful values
+        batch_size = states.size(0)
+        num_actions = self.env.action_space.n
+        v_min = self.v_min
+        v_max = self.v_max
+        delta_z = self.delta_z
+        num_atoms = self.num_atoms
 
-        # Minimum modification to get double q learning to work
-        # (Hasselt, Guez, and Silver, 2016: https://arxiv.org/pdf/1509.06461.pdf)
-        if self.config.double_q:
-            best_actions = torch.argmax(self.qvalue(next_states), dim=-1, keepdim=True)
-            q_next = q_next.gather(-1, best_actions)
-        else:
-            q_next = q_next.max(-1, keepdims=True)[0]  # Assuming action dim is the last dimension
+        # Run the q network on the current states.
+        q_val = self.qvalue(states).view(batch_size, num_actions, num_atoms)  # [batch_size, num_actions, num_atoms]
 
-        # Set the target (y_j in Mnih et al.) to r_j + gamma * Q_target(next_states)
-        # TODO: why aren't we taking the maximum over the actions?
-        target = (rewards + gammas * q_next)
+        # q_val = torch.stack(
+        #     [q_val[i].index_select(0, actions[i].int().to(torch.int64)) for i in range(batch_size)]).squeeze(1)
 
-        # Optionally clip the targets--empirically, this seems to work better
-        target = torch.clamp(target, *self.config.clip_target_range).detach()
+        # First, we run the Q value network on our next states.
+        q_next = self.qvalue_target(next_states).view(batch_size, num_actions,
+                                                      num_atoms).detach()  # [batch_size, num_actions, num_atoms]
 
-        if hasattr(self, 'logger') and self.config.opt_steps % 1000 == 0:
-            self.logger.add_histogram('Optimize/Target_q', target)
+        # This gives us a matrix of size |A| x N.
+        # That is, each row of the matrix represents a single action
+        # and the values in that row contain each probability for the N atoms.
 
-        # Get the distributions for both the normal and target networks over the next states
-        z = self.qvalue(next_states)
-        z_ = self.qvalue_target(next_states)
+        # Now, we need to compute Q(x_{t+1}, a), which is the expectation of the
+        # distribution Z(x_{t+1}, a). Using the first line of Algorithm 1 in
+        # Bellemare, Dabney, Munos, we know that that is \sum_i z_i p_i (x_{t+1}, a).
 
-        print("Writing!!!")
-        self.logger.add_histogram("Distribution", z)
+        # We compute all of the Q(x_{t+1}, a) values (that is, for every action a)
+        # using matrix multiplication: Q(x_{t+1}) = q_next * {z_0, z_1, ..., z_{N-1}}^T.
+        # q_next = torch.matmul(q_next.double(), torch.tensor(np.array(self.z).reshape(-1, 1))).squeeze(
+        #     2)  # [batch_size, num_actions]
 
-        # Get the optimal actions (clever code from Yu, 2017)
-        z_concat = np.vstack(z)
-        q = np.sum(np.multiply(z_concat, np.array(self.z)), axis=1)  # (num_atoms x num_actions)
-        q = q.reshape((self.config.batch_size, self.config.action_size), order='F')
-        optimal_action_indices = np.argmax(q, axis=1)
+        # Now get the best action a*:
+        best_actions = q_next.argmax(dim=1)
 
-        # Get the error
-        projected = self.__project_next_state_value_distribution(next_states, rewards, dones)
-        loss = self.model.fit(states, projected, batch_size=self.batch_size, nb_epoch=1, verbose=0)
+        # Now, we do the for loop to project it onto our support.
+        projected_dist = self.__project_next_state_value_distribution(states, actions, rewards, next_states, gammas,
+                                                                      dones,
+                                                                      q_next, best_actions)
+
+        # get loss
+        loss = projected_dist - q_val
+        loss = torch.mean(loss)
 
         # Clear previous gradients before the backward pass
         self.q_value_optimizer.zero_grad()
@@ -306,24 +297,3 @@ class DistributionalQNetwork(BaseQLearning):
 
         # Run the update
         self.q_value_optimizer.step()
-
-        return
-
-
-class RandomPolicy(mrl.Module):
-    def __init__(self):
-        super().__init__(
-            'policy',
-            required_agent_modules=[
-                'env'
-            ],
-            locals=locals())
-
-    def _setup(self):
-        pass
-
-    def __call__(self, state, greedy=False):
-        # Choose a random action and return it
-        action = np.random.randint(self.env.action_space.n, size=[self.env.num_envs])
-
-        return action

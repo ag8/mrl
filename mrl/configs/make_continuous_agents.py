@@ -169,12 +169,12 @@ def make_td3_agent(base_config=spinning_up_td3_config,
                    args=Namespace(env='InvertedPendulum-v2',
                                   tb='',
                                   prefix='td3',
-                                  parent_folder='/tmp/mrl',
+                                  parenFt_folder='/tmp/mrl',
                                   layers=(256, 256),
                                   num_envs=None),
                    agent_name_attrs=['env', 'seed', 'tb'],
                    **kwargs):
-    config = make_ddpg_agent(base_config, args, agent_name_attrs, **kwargs)
+    config = __ddpg_agent(base_config, args, agent_name_attrs, **kwargs)
     del config.module_algorithm
     config.module_algorithm = TD3()
 

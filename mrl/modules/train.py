@@ -25,7 +25,9 @@ class StandardTrain(mrl.Module):
         env = self.env
         state = env.state
 
-        for _ in range(num_steps // env.num_envs):
+        for step in range(num_steps // env.num_envs):
+            print("Currently at step " + str(step))
+
             action = self.policy(state)
             next_state, reward, done, info = env.step(action)
 
