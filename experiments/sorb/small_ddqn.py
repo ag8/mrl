@@ -3,7 +3,7 @@ import gym_minigrid
 
 
 def test_distributionaldqn():
-    print("About to test the DQN!")
+    print("About to test the DDQN!")
 
     print("Making agent...")
     config = make_distributionaldqn_agent(args=Namespace(env='CartPole-v1',
