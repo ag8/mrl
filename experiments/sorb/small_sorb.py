@@ -21,8 +21,10 @@ def test_distributionaldqn():
                                                 layers=(64, 64,),
                                                 max_episode_steps=1000,
                                                 batch_size=17,
-                                                warm_up=100,
+                                                warm_up=1000,
+                                                initial_explore=1000,
                                                 num_envs=1,
+                                                num_eval_envs=1,
                                                 use_distributional_rl=True,
                                                 )
                                  )

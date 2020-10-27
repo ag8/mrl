@@ -6,6 +6,7 @@ import networkx as nx
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.sparse.csgraph._shortest_path import floyd_warshall
 
 import mrl
 from mrl.modules.model import PytorchModel
@@ -115,14 +116,18 @@ class SearchPolicy(mrl.Module):
         self.cleanup = False
         self.attempt_cutoff = 3 * self.max_search_steps
 
-        # self.build_rb_graph()
-        # if not self.open_loop:
-        #     pdist2 = self.agent.get_pairwise_dist(self.rb_vec,
-        #                                           aggregate=self.aggregate,
-        #                                           max_search_steps=self.max_search_steps,
-        #                                           masked=True)
-        #     self.rb_distances = floyd_warshall(pdist2, directed=True)
         self.reset_stats()
+
+    def build_graph(self):
+        self.pdist = torch.zeros([self.agent.config.batch_size, self.agent.config.batch_size])
+
+        self.build_rb_graph()
+        if not self.open_loop:
+            pdist2 = self.agent.algorithm.get_pairwise_dist(self.rb_vec,
+                                                  aggregate=self.aggregate,
+                                                  max_search_steps=self.max_search_steps,
+                                                  masked=True)
+            self.rb_distances = floyd_warshall(np.split(pdist2, 4, axis=2)[0].squeeze(2), directed=True)  # bugbug currently running on only one batch-slice of the sample
 
     def _setup(self):
         self.use_qvalue_target = self.config.get('use_qvalue_target') or False
@@ -138,13 +143,11 @@ class SearchPolicy(mrl.Module):
             elif hasattr(self, 'ag_curiosity'):
                 state = self.ag_curiosity.relabel_state(state)
 
-        state = flatten_state(state)  # flatten goal environments
-        if hasattr(self, 'state_normalizer'):
-            state = self.state_normalizer(state, update=self.training)
-
         if res is not None:
             return res
 
+        # No longer warm-up
+        self.build_graph()
 
         goal = self.env.observation_space['desired_goal']
         dist_to_goal = self.agent.algorithm.get_dist_to_goal({k: [v] for k, v in state.items()})[0]
@@ -209,28 +212,43 @@ class SearchPolicy(mrl.Module):
         self.cleanup = cleanup
 
     def build_rb_graph(self):
+        states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
+        (replay_states, replay_goals) = torch.chunk(states, 2, dim=-1)  # [batch_size, 9, 9, 4] each
+
+        self.rb_vec = replay_states
+
         g = nx.DiGraph()
-        pdist_combined = np.max(self.pdist, axis=0)
+        # pdist_combined = np.max(np.array(self.pdist), axis=0)
         for i, s_i in enumerate(self.rb_vec):
             for j, s_j in enumerate(self.rb_vec):
-                length = pdist_combined[i, j]
+                length = self.pdist[i, j]
                 if length < self.max_search_steps:
                     g.add_edge(i, j, weight=length)
         self.g = g
 
     def get_pairwise_dist_to_rb(self, state, masked=True):
-        self.rb_vec = self.agent.replay_buffer.sample(self.agent.config.batch_size)
+        """
+
+        :param state: a dictionary.
+                      state['observation'] contains the observations, of size [1, 9, 9, 4].
+                      state['desired_goal'] contains the goals, of size [1, 9, 9, 4].
+        :param masked: whether it's masked or not
+        :return:
+        """
+
+        states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
+        (replay_states, replay_goals) = torch.chunk(states, 2, dim=-1)  # [batch_size, 9, 9, 4] each
 
         start_to_rb_dist = self.agent.algorithm.get_pairwise_dist([state['observation']],
-                                                        self.rb_vec,
-                                                        aggregate='mean',  #bugbug get from args
-                                                        max_search_steps=self.max_search_steps,
-                                                        masked=masked)
-        rb_to_goal_dist = self.agent.algorithm.get_pairwise_dist(self.rb_vec,
-                                                       [state['desired_goal']],
-                                                       aggregate='mean',  #bugbug get from args
-                                                       max_search_steps=self.max_search_steps,
-                                                       masked=masked)
+                                                                  replay_goals,
+                                                                  aggregate='mean',  # bugbug get from args
+                                                                  max_search_steps=self.max_search_steps,
+                                                                  masked=masked)
+        rb_to_goal_dist = self.agent.algorithm.get_pairwise_dist(replay_states,
+                                                                 [state['desired_goal']],
+                                                                 aggregate='mean',  # bugbug get from args
+                                                                 max_search_steps=self.max_search_steps,
+                                                                 masked=masked)
         return start_to_rb_dist, rb_to_goal_dist
 
     def get_closest_waypoint(self, state):
@@ -466,7 +484,7 @@ class DistributionalQNetwork(BaseQLearning):
     def __project_next_state_value_distribution(self, states, actions, rewards, next_states, gammas, dones,
                                                 next_distribution, best_actions):
         batch_size = states.size(0)
-        projected_distribution = torch.zeros(next_distribution.size())
+        projected_distribution = np.zeros(next_distribution.size())
 
         for i in range(batch_size):
             for j in range(self.num_atoms):
@@ -756,7 +774,8 @@ class SorbDDQN(BaseQLearning):
 
         return projected_distribution
 
-    def optimize_from_batch(self, states, actions, rewards, next_states, gammas, dones=None):  # bugbug currently dqn optimizer
+    def optimize_from_batch(self, states, actions, rewards, next_states, gammas,
+                            dones=None):  # bugbug currently dqn optimizer
         """
         The optimization method that gets called from _optimize in the BaseQLearning module.
 
@@ -825,9 +844,21 @@ class SorbDDQN(BaseQLearning):
             return self.actor(state).cpu().detach().numpy().flatten()
 
     def get_q_values(self, state, aggregate='mean'):
-        # q_values = super().get_q_values(state)
+        first_dim = state['observation'].shape[0]
 
-        q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=4).squeeze(1).squeeze(0).view(-1))
+        if first_dim != self.agent.config.batch_size and first_dim != 1:  # sometimes reshaping goes wrong idk  bugbug figure out why
+            state['observation'] = state['observation'].unsqueeze(0)
+            first_dim = 1
+
+        if state['goal'].shape.__len__() > 4:  # pesky size-1 dimensions out of nowhere
+            state['goal'] = torch.squeeze(state['goal'], dim=1)
+
+        if state['observation'].shape.__len__() > 4:  # how does this happen
+            state['observation'] = torch.squeeze(state['observation'], dim=1)
+
+        q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
+                               .squeeze(1).squeeze(0)
+                               .view(first_dim, -1))
 
         if not isinstance(q_values, list):
             q_values_list = [q_values]
@@ -856,6 +887,9 @@ class SorbDDQN(BaseQLearning):
             expected_q_values_list = q_values_list
 
         expected_q_values = torch.stack(expected_q_values_list)
+
+        aggregate = 'mean'  #bugbug get from args
+
         if aggregate is not None:
             if aggregate == 'mean':
                 expected_q_values = torch.mean(expected_q_values, dim=0)
@@ -913,11 +947,9 @@ class SorbDDQN(BaseQLearning):
 
     def get_dist_to_goal(self, state, **kwargs):
         with torch.no_grad():
-            print("Today, I feel like giving out the keys %s", str(state.keys()))
-
             state = dict(
                 observation=torch.FloatTensor(state['observation']),
-                goal=torch.FloatTensor(state['desired_goal']),  # bugbug why does desired_goal and goal alternate?
+                goal=torch.FloatTensor(state['desired_goal']),
             )
             q_values = self.get_q_values(state, **kwargs)
             return -1.0 * q_values.cpu().detach().numpy()
@@ -942,8 +974,8 @@ class SorbDDQN(BaseQLearning):
         for obs_index in range(len(obs_vec)):
             obs = obs_vec[obs_index]
             # obs_repeat_tensor = np.ones_like(goal_vec) * np.expand_dims(obs, 0)
-            obs_repeat_tensor = np.repeat([obs], len(goal_vec), axis=0)
-            state = {'observation': obs_repeat_tensor, 'desired_goal': goal_vec}
+            obs_repeat_tensor = np.repeat(obs, len(goal_vec), axis=0)
+            state = {'observation': obs_repeat_tensor.reshape(torch.tensor(goal_vec).shape), 'desired_goal': goal_vec}
             dist = self.get_dist_to_goal(state, aggregate=aggregate)
             dist_matrix.append(dist)
 
