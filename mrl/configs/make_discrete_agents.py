@@ -300,12 +300,12 @@ def make_ggw_test_agent(base_config=default_dqn_config,
         k: v
         for k, v in dict(module_train=StandardTrain(),
                          module_eval=EpisodicEval(),
-                         module_policy=QValuePolicy(),
+                         module_policy=SearchPolicy(),
                          module_logger=Logger(),
                          module_state_normalizer=Normalizer(MeanStdNormalizer()),
                          module_replay=OnlineHERBuffer(),
                          module_action_noise=None,
-                         module_algorithm=DQN()).items()
+                         module_algorithm=SorbDDQN(num_atoms=5, v_max=1, v_min=-1)).items()
         if k not in config
     }
 

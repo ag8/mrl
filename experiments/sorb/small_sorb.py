@@ -23,6 +23,7 @@ def test_distributionaldqn():
                                                 batch_size=17,
                                                 warm_up=100,
                                                 num_envs=1,
+                                                use_distributional_rl=True,
                                                 )
                                  )
 
