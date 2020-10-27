@@ -6,9 +6,9 @@ def test_dqn():
     print("About to test the DQN!")
 
     print("Making agent...")
-    config = make_dqn_agent(args=Namespace(env='LunarLander-v2',
+    config = make_dqn_agent(args=Namespace(env='CartPole-v1',
                                            tb='',
-                                           batch_size=256,
+                                           batch_size=1,
                                            target_network_update_frac=1.,
                                            target_network_update_freq=500,
                                            warm_up=2500,

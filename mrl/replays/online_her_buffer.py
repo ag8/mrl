@@ -1,10 +1,11 @@
-import mrl
-import gym
-from mrl.replays.core.shared_buffer import SharedMemoryTrajectoryBuffer as Buffer
-import numpy as np
-import pickle
 import os
-from mrl.utils.misc import batch_block_diag
+import pickle
+
+import gym
+import numpy as np
+
+import mrl
+from mrl.replays.core.shared_buffer import SharedMemoryTrajectoryBuffer as Buffer
 
 
 class OnlineHERBuffer(mrl.Module):
@@ -160,9 +161,8 @@ class OnlineHERBuffer(mrl.Module):
                     rewards = self.goal_reward(ags, goals, {'s': states, 'ns': next_states}).reshape(-1, 1).astype(
                         np.float32)
                 else:
-                    rewards = self.env.compute_reward(ags, goals, {'s': states, 'ns': next_states}).reshape(-1,
-                                                                                                            1).astype(
-                        np.float32)
+                    rewards = np.array(self.env.compute_reward(ags, goals, {'s': states, 'ns': next_states})).reshape(
+                        -1, 1).astype(np.float32)
 
                 if self.config.get('never_done'):
                     dones = np.zeros_like(rewards, dtype=np.float32)

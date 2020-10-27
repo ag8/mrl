@@ -18,13 +18,16 @@ def test_distributionaldqn():
                                                          parent_folder='/tmp/mrl',
                                                          layers=(64, 64,),
                                                          num_envs=1,
+                                                         num_atoms=5,
+                                                         v_min=-1,
+                                                         v_max=1,
                                                          device='cpu'))
 
     agent = mrl.config_to_agent(config)
     print("Made agent successfully!")
 
     print("Training agent...")
-    agent.train(num_steps=50000)
+    agent.train(num_steps=10000, render=False)
     assert len(agent.eval(num_episodes=1).rewards) == 1
     agent.train(num_steps=10000, render=True)
     print("Trained agent...")

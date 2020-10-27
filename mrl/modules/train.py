@@ -48,7 +48,8 @@ class StandardTrain(mrl.Module):
             self.process_experience(experience)
 
             if render:
-                time.sleep(0.02)
+                # time.sleep(0.02)
+                time.sleep(2)
                 env.render()
 
             for _ in range(env.num_envs):

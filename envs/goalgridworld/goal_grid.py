@@ -32,8 +32,8 @@ class GoalGridWorldEnv(gym.GoalEnv):
 
     MOVE_DIRECTION = [[0, -1], [1, 0], [0, 1], [-1, 0]]  # up, right, down, left
 
-    def __init__(self, grid_size=16, max_step=100, grid_file=None, random_init_loc=True, \
-                 agent_loc_file=None, goal_file=None, seed=1337):
+    def __init__(self, grid_size=16, max_step=100, grid_file=None, random_init_loc=True, agent_loc_file=None,
+                 goal_file=None, seed=1337):
         # Action enumeration
         self.actions = GoalGridWorldEnv.Actions
 
