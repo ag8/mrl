@@ -4,9 +4,9 @@ import time
 
 import networkx as nx
 import numpy as np
+import scipy
 import torch
 import torch.nn.functional as F
-from scipy.sparse.csgraph._shortest_path import floyd_warshall
 
 import mrl
 from mrl.modules.model import PytorchModel
@@ -102,11 +102,11 @@ class SearchPolicy(mrl.Module):
             ],
             locals=locals())
 
-        # self.rb_vec = self.agent.replay_buffer
+        self.replay_states_in_graph = []
         self.pdist = None
 
         self.aggregate = False
-        self.max_search_steps = 3
+        self.max_dist = 3
         self.open_loop = False
         self.weighted_path_planning = False
 
@@ -114,20 +114,76 @@ class SearchPolicy(mrl.Module):
 
         self.no_waypoint_hopping = False
         self.cleanup = False
-        self.attempt_cutoff = 3 * self.max_search_steps
+        self.attempt_cutoff = 3 * self.max_dist
+        self.reached_final_waypoint = False
+
+        self.graph_exists = False
 
         self.reset_stats()
 
-    def build_graph(self):
-        self.pdist = torch.zeros([self.agent.config.batch_size, self.agent.config.batch_size])
+    def build_graph_on_top_of_replay_buffer(self):
+        """
+        Builds a graph on top of the current replay buffer.
 
-        self.build_rb_graph()
+        :return: none
+        """
+
+        # Create a directed graph
+        graph = nx.DiGraph()
+
+        # Sample everything from the replay buffer
+        # (we build the graph on top of the whole thing so far)
+        states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(len(
+            self.replay_buffer))
+        # states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(17)
+        self.replay_states_in_graph.append(next_states)
+
+        # Get the pairwise distances between each pair of points in the current replay buffer.
+        # (This is a bit of a huge graph, which is one of the issues with SoRB)
+        pairwise_distances = self.agent.algorithm.get_pairwise_dist(next_states.numpy(), aggregate=None)
+
+        combined_pairwise_distances = np.max(pairwise_distances, axis=-1)
+
+        # For each pair of points in the replay buffer
+        for i, s_i in enumerate(self.replay_states_in_graph):
+            for j, s_j in enumerate(self.replay_states_in_graph):
+                # Get the distance between them
+                length = combined_pairwise_distances[i, j]
+
+                # If the length is less than the max_dist hyperparameter,
+                # add it to the graph with an edge weight being the estimated distance.
+                # Note that we don't actually make a graph out of "real states",
+                # like observations--we just build the graph on top of the indices.
+                # Thus, the graph just contains numbers, but the number i in the graph
+                # corresponds to the ith state in the replay buffer, so it's isomorphic.
+                if length < self.max_dist:
+                    graph.add_edge(i, j, weight=length)
+
+        # Save the graph to a class variable.
+        self.replay_buffer_graph = graph
+
         if not self.open_loop:
-            pdist2 = self.agent.algorithm.get_pairwise_dist(self.rb_vec,
-                                                  aggregate=self.aggregate,
-                                                  max_search_steps=self.max_search_steps,
-                                                  masked=True)
-            self.rb_distances = floyd_warshall(np.split(pdist2, 4, axis=2)[0].squeeze(2), directed=True)  # bugbug currently running on only one batch-slice of the sample
+            print("Building F_W distances now yo")
+
+            pdist2 = self.agent.algorithm.get_pairwise_dist(self.replay_states_in_graph[0],
+                                                            aggregate=self.aggregate,
+                                                            max_dist=self.max_dist,
+                                                            masked=True)
+            # pdist2 = np.max(pdist2, axis=-1)
+            self.rb_distances = scipy.sparse.csgraph.floyd_warshall(pdist2, directed=True)
+
+        self.reset_stats()
+
+    # def build_graph(self):
+    #     self.pdist = torch.zeros([self.agent.config.batch_size, self.agent.config.batch_size])
+    #
+    #     self.build_rb_graph()
+    #     if not self.open_loop:
+    #         pdist2 = self.agent.algorithm.get_pairwise_dist(self.rb_vec,
+    #                                               aggregate=self.aggregate,
+    #                                               max_search_steps=self.max_search_steps,
+    #                                               masked=True)
+    #         self.rb_distances = floyd_warshall(np.split(pdist2, 4, axis=2)[0].squeeze(2), directed=True)  # bugbug currently running on only one batch-slice of the sample
 
     def _setup(self):
         self.use_qvalue_target = self.config.get('use_qvalue_target') or False
@@ -147,10 +203,16 @@ class SearchPolicy(mrl.Module):
             return res
 
         # No longer warm-up
-        self.build_graph()
+        if not self.graph_exists:
+            self.build_graph_on_top_of_replay_buffer()
+            self.graph_exists = True
 
         goal = self.env.observation_space['desired_goal']
-        dist_to_goal = self.agent.algorithm.get_dist_to_goal({k: [v] for k, v in state.items()})[0]
+        dist_to_goal = self.agent.algorithm.get_dist_to_goal({k: v for k, v in state.items()})[0][0]
+
+        if dist_to_goal <= 0:  # bugbug why?
+            dist_to_goal = 100000
+
         if self.open_loop or self.cleanup:
             if state.get('first_step', False): self.initialize_path(state)
 
@@ -159,7 +221,7 @@ class SearchPolicy(mrl.Module):
                 if self.waypoint_counter != 0 and not self.reached_final_waypoint:
                     src_node = self.waypoint_indices[self.waypoint_counter - 1]
                     dest_node = self.waypoint_indices[self.waypoint_counter]
-                    self.g.remove_edge(src_node, dest_node)
+                    self.replay_buffer_graph.remove_edge(src_node, dest_node)
                 self.initialize_path(state)
 
             waypoint, waypoint_index = self.get_current_waypoint()
@@ -186,15 +248,19 @@ class SearchPolicy(mrl.Module):
 
         if (self.no_waypoint_hopping and not self.reached_final_waypoint) or \
                 (dist_to_goal_via_waypoint < dist_to_goal) or \
-                (dist_to_goal > self.max_search_steps):
-            state['goal'] = waypoint
+                (dist_to_goal > self.max_dist):
+            # state['goal'] = waypoint
+            (_, state['goal']) = torch.chunk(waypoint, 2, dim=-1)
             if self.open_loop: self.waypoint_attempts += 1
         else:
-            state['goal'] = goal
-        return super().select_action(state)
+            (_, state['goal']) = torch.chunk(torch.tensor(goal.sample()), 2, dim=-1)
+
+        # print("BREAKPOINT")
+
+        return self.agent.algorithm.select_action(state)
 
     def __str__(self):
-        s = f'{self.__class__.__name__} (|V|={self.g.number_of_nodes()}, |E|={self.g.number_of_edges()})'
+        s = f'{self.__class__.__name__} (|V|={self.replay_buffer_graph.number_of_nodes()}, |E|={self.replay_buffer_graph.number_of_edges()})'
         return s
 
     def reset_stats(self):
@@ -211,22 +277,36 @@ class SearchPolicy(mrl.Module):
     def set_cleanup(self, cleanup):  # if True, will prune edges when fail to reach waypoint after `attempt_cutoff`
         self.cleanup = cleanup
 
-    def build_rb_graph(self):
-        states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
-        (replay_states, replay_goals) = torch.chunk(states, 2, dim=-1)  # [batch_size, 9, 9, 4] each
+    # def build_rb_graph(self):
+    #     print("Building graph")
+    #
+    #     states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
+    #     (replay_states, replay_goals) = torch.chunk(states, 2, dim=-1)  # [batch_size, 9, 9, 4] each
+    #
+    #     self.replay_states_in_graph = replay_states
+    #
+    #     g = nx.DiGraph()
+    #     # pdist_combined = np.max(np.array(self.pdist), axis=0)
+    #     for i, s_i in enumerate(self.replay_states_in_graph):
+    #         for j, s_j in enumerate(self.replay_states_in_graph):
+    #             length = self.pdist[i, j]
+    #             if length < self.max_dist:
+    #                 g.add_edge(i, j, weight=length)
+    #
+    #     self.replay_buffer_graph = g
+    #
+    #     if not self.open_loop:
+    #         print("Building F_W distances now yo")
+    #
+    #         pdist2 = self.agent.get_pairwise_dist(self.replay_states_in_graph,
+    #                                               aggregate=self.aggregate,
+    #                                               max_search_steps=self.max_search_steps,
+    #                                               masked=True)
+    #         self.rb_distances = scipy.sparse.csgraph.floyd_warshall(pdist2, directed=True)
+    #
+    #     self.reset_stats()
 
-        self.rb_vec = replay_states
-
-        g = nx.DiGraph()
-        # pdist_combined = np.max(np.array(self.pdist), axis=0)
-        for i, s_i in enumerate(self.rb_vec):
-            for j, s_j in enumerate(self.rb_vec):
-                length = self.pdist[i, j]
-                if length < self.max_search_steps:
-                    g.add_edge(i, j, weight=length)
-        self.g = g
-
-    def get_pairwise_dist_to_rb(self, state, masked=True):
+    def get_pairwise_distance_to_states_in_replay_graph(self, state, masked=True):
         """
 
         :param state: a dictionary.
@@ -236,55 +316,59 @@ class SearchPolicy(mrl.Module):
         :return:
         """
 
-        states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
-        (replay_states, replay_goals) = torch.chunk(states, 2, dim=-1)  # [batch_size, 9, 9, 4] each
+        # states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
+        (replay_observations, replay_goals) = torch.chunk(self.replay_states_in_graph[0], 2,
+                                                          dim=-1)  # [batch_size, 9, 9, 4] each
 
-        start_to_rb_dist = self.agent.algorithm.get_pairwise_dist([state['observation']],
-                                                                  replay_goals,
-                                                                  aggregate='mean',  # bugbug get from args
-                                                                  max_search_steps=self.max_search_steps,
-                                                                  masked=masked)
-        rb_to_goal_dist = self.agent.algorithm.get_pairwise_dist(replay_states,
-                                                                 [state['desired_goal']],
-                                                                 aggregate='mean',  # bugbug get from args
-                                                                 max_search_steps=self.max_search_steps,
-                                                                 masked=masked)
-        return start_to_rb_dist, rb_to_goal_dist
+        start_to_replay_buffer_distance = self.agent.algorithm.get_pairwise_dist(state['observation'],
+                                                                                 replay_goals,
+                                                                                 aggregate='mean',
+                                                                                 # bugbug get from args
+                                                                                 max_dist=self.max_dist,
+                                                                                 masked=masked)
+        replay_buffer_to_goal_distance = self.agent.algorithm.get_pairwise_dist(replay_observations,
+                                                                                state['desired_goal'],
+                                                                                aggregate='mean',
+                                                                                # bugbug get from args
+                                                                                max_dist=self.max_dist,
+                                                                                masked=masked)
+        return start_to_replay_buffer_distance, replay_buffer_to_goal_distance
 
     def get_closest_waypoint(self, state):
         """
         For closed loop replanning at each step. Uses the precomputed distances
         `rb_distances` b/w states in `rb_vec`
         """
-        obs_to_rb_dist, rb_to_goal_dist = self.get_pairwise_dist_to_rb(state)
+        observations_to_replay_buffer_distances, replay_buffer_to_goal_distances = self.get_pairwise_distance_to_states_in_replay_graph(
+            state)
         # (B x A), (A x B)
 
         # The search_dist tensor should be (B x A x A)
         search_dist = sum([
-            np.expand_dims(obs_to_rb_dist, 2),
+            np.expand_dims(observations_to_replay_buffer_distances, 2),
             np.expand_dims(self.rb_distances, 0),
-            np.expand_dims(np.transpose(rb_to_goal_dist), 1)
+            np.expand_dims(np.transpose(replay_buffer_to_goal_distances), 1)
         ])  # elementwise sum
 
         # We assume a batch size of 1.
         min_search_dist = np.min(search_dist)
         waypoint_index = np.argmin(np.min(search_dist, axis=2), axis=1)[0]
-        waypoint = self.rb_vec[waypoint_index]
+        waypoint = self.replay_states_in_graph[0][waypoint_index]
 
         return waypoint, min_search_dist
 
     def construct_planning_graph(self, state):
-        start_to_rb_dist, rb_to_goal_dist = self.get_pairwise_dist_to_rb(state)
-        planning_graph = self.g.copy()
+        start_to_rb_dist, rb_to_goal_dist = self.get_pairwise_distance_to_states_in_replay_graph(state)
+        planning_graph = self.replay_buffer_graph.copy()
 
         for i, (dist_from_start, dist_to_goal) in enumerate(zip(start_to_rb_dist.flatten(), rb_to_goal_dist.flatten())):
-            if dist_from_start < self.max_search_steps:
+            if dist_from_start < self.max_dist:
                 planning_graph.add_edge('start', i, weight=dist_from_start)
-            if dist_to_goal < self.max_search_steps:
+            if dist_to_goal < self.max_dist:
                 planning_graph.add_edge(i, 'goal', weight=dist_to_goal)
 
-        if not np.any(start_to_rb_dist < self.max_search_steps) or not np.any(
-                rb_to_goal_dist < self.max_search_steps):
+        if not np.any(start_to_rb_dist < self.max_dist) or not np.any(
+                rb_to_goal_dist < self.max_dist):
             self.stats['localization_fails'] += 1
 
         return planning_graph
@@ -322,15 +406,15 @@ class SearchPolicy(mrl.Module):
 
     def get_current_waypoint(self):
         waypoint_index = self.waypoint_indices[self.waypoint_counter]
-        waypoint = self.rb_vec[waypoint_index]
+        waypoint = self.replay_states_in_graph[waypoint_index]
         return waypoint, waypoint_index
 
     def get_waypoints(self):
-        waypoints = [self.rb_vec[i] for i in self.waypoint_indices]
+        waypoints = [self.replay_states_in_graph[i] for i in self.waypoint_indices]
         return waypoints
 
     def reached_waypoint(self, dist_to_waypoint, state, waypoint_index):
-        return dist_to_waypoint < self.max_search_steps
+        return dist_to_waypoint < self.max_dist
 
 
 class BaseQLearning(mrl.Module):
@@ -838,34 +922,50 @@ class SorbDDQN(BaseQLearning):
     def select_action(self, state):
         with torch.no_grad():
             state = dict(
-                observation=torch.FloatTensor(state['observation'].reshape(1, -1)),
-                goal=torch.FloatTensor(state['goal'].reshape(1, -1)),
+                observation=torch.FloatTensor(state['observation']),
+                goal=torch.FloatTensor(state['goal']).unsqueeze(dim=0),
             )
-            return self.actor(state).cpu().detach().numpy().flatten()
+
+            return [int(np.argmax(self.get_q_values(state)))]  # list to simulate one env
+            # return self.actor(state).cpu().detach().numpy().flatten()
 
     def get_q_values(self, state, aggregate='mean'):
         first_dim = state['observation'].shape[0]
 
-        if first_dim != self.agent.config.batch_size and first_dim != 1:  # sometimes reshaping goes wrong idk  bugbug figure out why
-            state['observation'] = state['observation'].unsqueeze(0)
-            first_dim = 1
+        # if first_dim != self.agent.config.batch_size and first_dim != 1:  # sometimes reshaping goes wrong idk  bugbug figure out why
+        #     state['observation'] = state['observation'].unsqueeze(0)
+        #     first_dim = 1
+        #
+        # if state['goal'].shape.__len__() > 4:  # pesky size-1 dimensions out of nowhere
+        #     state['goal'] = torch.squeeze(state['goal'], dim=1)
+        #
+        # if state['observation'].shape.__len__() > 4:  # how does this happen
+        #     state['observation'] = torch.squeeze(state['observation'], dim=1)
 
-        if state['goal'].shape.__len__() > 4:  # pesky size-1 dimensions out of nowhere
-            state['goal'] = torch.squeeze(state['goal'], dim=1)
+        # q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
+        #                        .squeeze(1).squeeze(0)
+        #                        .view(first_dim, -1))
 
-        if state['observation'].shape.__len__() > 4:  # how does this happen
-            state['observation'] = torch.squeeze(state['observation'], dim=1)
+        # For now, we don't know whether we're getting in a goal-stacked or a non-goal-stacked observation.
+        # Thus, figure out whether to stack stuff or not
+        # bugbug figure out why we get different inputs
+        last_dim = state['observation'].shape[-1]
 
-        q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
-                               .squeeze(1).squeeze(0)
-                               .view(first_dim, -1))
+        if last_dim == 4:
+            q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
+                                   .squeeze(1).squeeze(0)
+                                   .view(first_dim, -1))
 
-        if not isinstance(q_values, list):
-            q_values_list = [q_values]
-        else:
-            q_values_list = q_values
+            if not isinstance(q_values, list):
+                q_values_list = [q_values]
+            else:
+                q_values_list = q_values
 
-        del q_values
+            del q_values
+        elif last_dim == 8:
+            q_value_obs = self.qvalue(state['observation'].view(first_dim, -1))
+            q_value_goal = self.qvalue(state['goal'].view(first_dim, -1))
+            q_values_list = [q_value_obs, q_value_goal]
 
         self.use_distributional_rl = False  # bugbug get from config
 
@@ -888,7 +988,7 @@ class SorbDDQN(BaseQLearning):
 
         expected_q_values = torch.stack(expected_q_values_list)
 
-        aggregate = 'mean'  #bugbug get from args
+        aggregate = 'mean'  # bugbug get from args
 
         if aggregate is not None:
             if aggregate == 'mean':
@@ -945,16 +1045,7 @@ class SorbDDQN(BaseQLearning):
         critic_loss = torch.mean(torch.stack(critic_loss_list))
         return critic_loss
 
-    def get_dist_to_goal(self, state, **kwargs):
-        with torch.no_grad():
-            state = dict(
-                observation=torch.FloatTensor(state['observation']),
-                goal=torch.FloatTensor(state['desired_goal']),
-            )
-            q_values = self.get_q_values(state, **kwargs)
-            return -1.0 * q_values.cpu().detach().numpy()
-
-    def get_pairwise_dist(self, obs_vec, goal_vec=None, aggregate='mean', max_search_steps=7, masked=False):
+    def get_pairwise_dist(self, obs_vec, goal_vec=None, aggregate='mean', max_dist=7, masked=False):
         """Estimates the pairwise distances.
           obs_vec: Array containing observations
           goal_vec: (optional) Array containing a second set of observations. If
@@ -967,29 +1058,44 @@ class SorbDDQN(BaseQLearning):
           masked: (bool) Whether to ignore edges that are too long, as defined by
                   max_search_steps.
         """
+
+        # If there's no second vector, compute the pairwise distances
+        # between the elements of the first vector and itself.
         if goal_vec is None:
             goal_vec = obs_vec
 
+        # print("Goal vector size: " + str(goal_vec.shape))
+
         dist_matrix = []
         for obs_index in range(len(obs_vec)):
-            obs = obs_vec[obs_index]
+            obs = np.expand_dims(obs_vec[obs_index], 0)
             # obs_repeat_tensor = np.ones_like(goal_vec) * np.expand_dims(obs, 0)
             obs_repeat_tensor = np.repeat(obs, len(goal_vec), axis=0)
-            state = {'observation': obs_repeat_tensor.reshape(torch.tensor(goal_vec).shape), 'desired_goal': goal_vec}
+            state = {'observation': obs_repeat_tensor, 'desired_goal': goal_vec}
             dist = self.get_dist_to_goal(state, aggregate=aggregate)
             dist_matrix.append(dist)
 
         pairwise_dist = np.stack(dist_matrix)
         if aggregate is None:
             pairwise_dist = np.transpose(pairwise_dist, [1, 0, 2])
-        # else:
-        #     pairwise_dist = np.expand_dims(pairwise_dist, 0)
+        else:
+            # pairwise_dist = np.expand_dims(pairwise_dist, 0)
+            pairwise_dist = np.mean(pairwise_dist, axis=-1)
 
         if masked:
-            mask = (pairwise_dist > max_search_steps)
+            mask = (pairwise_dist > max_dist)
             return np.where(mask, np.full(pairwise_dist.shape, np.inf), pairwise_dist)
         else:
             return pairwise_dist
+
+    def get_dist_to_goal(self, state, **kwargs):
+        with torch.no_grad():
+            state = dict(
+                observation=torch.FloatTensor(state['observation']),
+                goal=torch.FloatTensor(state['desired_goal']),
+            )
+            q_values = self.get_q_values(state, **kwargs)
+            return -1.0 * q_values.cpu().detach().numpy()
 
     def reset_stats(self):
         self.stats = dict(
@@ -1019,12 +1125,12 @@ class SorbDDQN(BaseQLearning):
         start_to_rb_dist = self.agent.get_pairwise_dist([state['observation']],
                                                         self.rb_vec,
                                                         aggregate=self.aggregate,
-                                                        max_search_steps=self.max_search_steps,
+                                                        max_dist=self.max_search_steps,
                                                         masked=masked)
         rb_to_goal_dist = self.agent.get_pairwise_dist(self.rb_vec,
                                                        [state['goal']],
                                                        aggregate=self.aggregate,
-                                                       max_search_steps=self.max_search_steps,
+                                                       max_dist=self.max_search_steps,
                                                        masked=masked)
         return start_to_rb_dist, rb_to_goal_dist
 

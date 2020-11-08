@@ -335,7 +335,8 @@ def make_ggw_test_agent(base_config=default_dqn_config,
         'qvalue',
         lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
                               args.layers, layer_norm, make_activ(config.activ)),
-                       e.action_dim)
+                       e.action_dim,
+                       use_layer_init=True)
     )
 
     # assert args.max_episode_steps is not None
