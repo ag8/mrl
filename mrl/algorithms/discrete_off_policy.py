@@ -255,8 +255,6 @@ class SearchPolicy(mrl.Module):
         else:
             (_, state['goal']) = torch.chunk(torch.tensor(goal.sample()), 2, dim=-1)
 
-        # print("BREAKPOINT")
-
         return self.agent.algorithm.select_action(state)
 
     def __str__(self):
