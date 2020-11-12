@@ -210,8 +210,8 @@ class SearchPolicy(mrl.Module):
         goal = self.env.observation_space['desired_goal']
         dist_to_goal = self.agent.algorithm.get_dist_to_goal({k: v for k, v in state.items()})[0][0]
 
-        if dist_to_goal <= 0:  # bugbug why?
-            dist_to_goal = 100000
+        # if dist_to_goal <= 0:
+        #     dist_to_goal = 100000
 
         if self.open_loop or self.cleanup:
             if state.get('first_step', False): self.initialize_path(state)
@@ -253,7 +253,10 @@ class SearchPolicy(mrl.Module):
             (_, state['goal']) = torch.chunk(waypoint, 2, dim=-1)
             if self.open_loop: self.waypoint_attempts += 1
         else:
-            (_, state['goal']) = torch.chunk(torch.tensor(goal.sample()), 2, dim=-1)
+            if goal.shape[-1] != 4:
+                (_, state['goal']) = torch.chunk(torch.tensor(goal.sample()).float(), 2, dim=-1)
+            else:
+                state['goal'] = torch.tensor(goal.sample()).float()
 
         return self.agent.algorithm.select_action(state)
 
