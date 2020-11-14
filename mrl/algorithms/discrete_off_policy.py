@@ -136,6 +136,11 @@ class SearchPolicy(mrl.Module):
         states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(len(
             self.replay_buffer))
         # states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(17)
+
+        # In our replay buffer, we care about the states,
+        # and not the goals that we had at that point in time
+        next_states, _ = torch.chunk(next_states, 2, dim=-1)
+
         self.replay_states_in_graph.append(next_states)
 
         # Get the pairwise distances between each pair of points in the current replay buffer.
@@ -207,7 +212,7 @@ class SearchPolicy(mrl.Module):
             self.build_graph_on_top_of_replay_buffer()
             self.graph_exists = True
 
-        goal = self.env.observation_space['desired_goal']
+        goal = state['desired_goal']
         dist_to_goal = self.agent.algorithm.get_dist_to_goal({k: v for k, v in state.items()})[0][0]
 
         # if dist_to_goal <= 0:
@@ -249,14 +254,12 @@ class SearchPolicy(mrl.Module):
         if (self.no_waypoint_hopping and not self.reached_final_waypoint) or \
                 (dist_to_goal_via_waypoint < dist_to_goal) or \
                 (dist_to_goal > self.max_dist):
-            # state['goal'] = waypoint
-            (_, state['goal']) = torch.chunk(waypoint, 2, dim=-1)
-            if self.open_loop: self.waypoint_attempts += 1
+            state['goal'] = waypoint
+
+            if self.open_loop:
+                self.waypoint_attempts += 1
         else:
-            if goal.shape[-1] != 4:
-                (_, state['goal']) = torch.chunk(torch.tensor(goal.sample()).float(), 2, dim=-1)
-            else:
-                state['goal'] = torch.tensor(goal.sample()).float()
+            state['goal'] = goal
 
         return self.agent.algorithm.select_action(state)
 
@@ -318,16 +321,17 @@ class SearchPolicy(mrl.Module):
         """
 
         # states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
-        (replay_observations, replay_goals) = torch.chunk(self.replay_states_in_graph[0], 2,
-                                                          dim=-1)  # [batch_size, 9, 9, 4] each
+        # (replay_observations, replay_goals) = torch.chunk(self.replay_states_in_graph[0], 2,
+        #                                                   dim=-1)  # [batch_size, 9, 9, 4] each
+        replay_states = self.replay_states_in_graph[0]
 
         start_to_replay_buffer_distance = self.agent.algorithm.get_pairwise_dist(state['observation'],
-                                                                                 replay_goals,
+                                                                                 replay_states,
                                                                                  aggregate='mean',
                                                                                  # bugbug get from args
                                                                                  max_dist=self.max_dist,
                                                                                  masked=masked)
-        replay_buffer_to_goal_distance = self.agent.algorithm.get_pairwise_dist(replay_observations,
+        replay_buffer_to_goal_distance = self.agent.algorithm.get_pairwise_dist(replay_states,
                                                                                 state['desired_goal'],
                                                                                 aggregate='mean',
                                                                                 # bugbug get from args
@@ -924,7 +928,7 @@ class SorbDDQN(BaseQLearning):
         with torch.no_grad():
             state = dict(
                 observation=torch.FloatTensor(state['observation']),
-                goal=torch.FloatTensor(state['goal']).unsqueeze(dim=0),
+                goal=torch.FloatTensor(state['goal']),
             )
 
             return [int(np.argmax(self.get_q_values(state)))]  # list to simulate one env
@@ -1065,18 +1069,45 @@ class SorbDDQN(BaseQLearning):
         if goal_vec is None:
             goal_vec = obs_vec
 
-        # print("Goal vector size: " + str(goal_vec.shape))
+        # The size of the observation tensor is [batch_size, 9, 9, 4].
+        # The size of the goal tensor is also [batch_size, 9, 9, 4].    bugbug could be not square
+        # Let's get the batch dimension, so we can use it later:
+        obs_batch_size = obs_vec.shape[0]
+        goal_batch_size = goal_vec.shape[0]
+        # Thus, in order to efficiently compute all the distances,
+        # we make a tensor of size [batch_size * batch_size, 9, 9, 8],
+        # which contains every pairwise combination (so we need to call
+        # the q-value function only once).
+        # First, we obtain the tiled (e.g., copied and pasted) version
+        # of the observation vector:
+        obs_tiled = np.tile(obs_vec, (goal_batch_size, 1, 1, 1))  # size: [batch_size * batch_size, 9, 9, 4]
+        # Next, we obtain the repeated (e.g., elementwise expanded)
+        # version of the goal vector:
+        goal_repeated = np.repeat(goal_vec, obs_batch_size, axis=0)  # size: [batch_size * batch_size, 9, 9, 4]
+        # Finally, we get the efficient state tensor:
+        state = {'observation': obs_tiled, 'desired_goal': goal_repeated}
+        # Which gets us the q-values super quickly:
+        dist = self.get_dist_to_goal(state, aggregate=aggregate)
+        # Now, since we did the weird thing where we make
+        # a batch_size^2-length tensor, we need to convert
+        # it back to [batch_size, batch_size, &c].
+        dist = dist.reshape(obs_batch_size, goal_batch_size, -1)
+        # Now, the distances tensor has shape [batch_size, batch_size, 4], as desired.
 
-        dist_matrix = []
-        for obs_index in range(len(obs_vec)):
-            obs = np.expand_dims(obs_vec[obs_index], 0)
-            # obs_repeat_tensor = np.ones_like(goal_vec) * np.expand_dims(obs, 0)
-            obs_repeat_tensor = np.repeat(obs, len(goal_vec), axis=0)
-            state = {'observation': obs_repeat_tensor, 'desired_goal': goal_vec}
-            dist = self.get_dist_to_goal(state, aggregate=aggregate)
-            dist_matrix.append(dist)
+        # Old code (Ben)
+        # dist_matrix = []
+        # for obs_index in range(len(obs_vec)):
+        #     obs = np.expand_dims(obs_vec[obs_index], 0)
+        #     # obs_repeat_tensor = np.ones_like(goal_vec) * np.expand_dims(obs, 0)
+        #     obs_repeat_tensor = np.repeat(obs, len(goal_vec), axis=0)
+        #     state = {'observation': obs_repeat_tensor, 'desired_goal': goal_vec}
+        #     dist = self.get_dist_to_goal(state, aggregate=aggregate)
+        #     dist_matrix.append(dist)
+        #
+        # pairwise_dist = np.stack(dist_matrix)
 
-        pairwise_dist = np.stack(dist_matrix)
+        pairwise_dist = dist
+
         if aggregate is None:
             pairwise_dist = np.transpose(pairwise_dist, [1, 0, 2])
         else:

@@ -2,7 +2,7 @@ from envs.goalgridworld.goal_grid import GoalGridWorldEnv
 from mrl.configs.make_discrete_agents import *
 
 
-def make_env(grid_file='2_room_9x9.txt'):
+def make_env(grid_file='room_5x5_empty.txt'):
     """
     This is a custom environment function that creates the GoalGridWorld environment.
 
@@ -15,18 +15,18 @@ def make_env(grid_file='2_room_9x9.txt'):
     return env
 
 
-def test_distributionaldqn():
+def test_sorb():
     print("Running SoRB!")
 
     print("Making agent...")
-    config = make_ggw_test_agent(args=Namespace(
+    config = get_ggw_test_agent_config(args=Namespace(
         env=make_env,  # load the GoalGridWorld environment
         parent_folder='/tmp/mrl',  # where to store the logs
         layers=(64, 64,),  # shape of... bugbug what?
         max_episode_steps=1000,  # maximum steps per episode
         batch_size=1,  # the batch size
-        warm_up=3000,  # how many steps to take randomly in order to fill up the replay buffer
-        initial_explore=3000,  # bugbug how is this distinct from the previous parameter?
+        warm_up=80,  # how many steps to take randomly in order to fill up the replay buffer
+        initial_explore=80,  # bugbug how is this distinct from the previous parameter?
         num_envs=1,  # number of training environments
         num_eval_envs=1,  # number of testing environments
         use_distributional_rl=True,  # whether to use distributional RL (if false, it will just use the clipping trick)
@@ -49,4 +49,4 @@ def test_distributionaldqn():
     print("Elapsed time: " + str(elapsed) + "ms.")
 
 
-test_distributionaldqn()
+test_sorb()

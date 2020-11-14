@@ -256,24 +256,26 @@ def make_sorbiquet_agent(base_config=default_dqn_config,
     return config
 
 
-def make_ggw_test_agent(base_config=default_dqn_config,
-                        args=Namespace(env='InvertedPendulum-v2',
-                                       tb='',
-                                       parent_folder='/tmp/mrl',
-                                       layers=(256, 256),
-                                       num_envs=None,
-                                       num_atoms=5,
-                                       v_min=-1,
-                                       v_max=1,
-                                       max_episode_steps=1000,
-                                       ensemble_size=3,
-                                       combine_ensemble_method='min',
-                                       use_distributional_rl=True),
-                        agent_name_attrs=['env', 'seed', 'tb'],
-                        **kwargs):
+def get_ggw_test_agent_config(base_config=default_dqn_config,
+                              args=Namespace(),
+                              agent_name_attrs=None,
+                              **kwargs):
+    """
+    Creates the configuration for the GoalGridWorld test agent.
+
+    :param base_config: the base configuration to use. Default: the default DQN configurations
+    :param args: a `Namespace` of arguments to pass.
+    :param agent_name_attrs: the names of the other modules that the agent should know about
+    :param kwargs: other keyword arguments
+    :return: the configuration for the GoalGridWorld test agent.
+    """
+
     if callable(base_config):  # If the base_config parameter is a function, make sure to call it
         base_config = base_config()
     config = base_config
+
+    if agent_name_attrs is None:  # If there's no attributes given, set some defaults
+        agent_name_attrs = ['env', 'seed', 'tb']
 
     # Train on as many environments as the CPU allows,
     # unless specified otherwise.
@@ -281,19 +283,22 @@ def make_ggw_test_agent(base_config=default_dqn_config,
         import multiprocessing as mp
         args.num_envs = max(mp.cpu_count() - 1, 1)
 
-    # set the prefix (todo: why?)
+    # set the prefix (this is used in the data storage directories)
     if not hasattr(args, 'prefix'):
         args.prefix = 'sorb_ddqn_agent'
 
-    # set whatever this is (todo: why?)
+    # set the time values (this is used in the data storage directories)
     if not hasattr(args, 'tb'):
         args.tb = str(time.time())
     if not args.tb:
         args.tb = str(time.time())
 
+    # Combine the arguments from the config and the arguments list
+    # into one configuration Namespace
     merge_args_into_config(args, config)
     config.env = args.env  # for some reason this doesn't happen automatically with merge_args
 
+    # Create an ~agent name~
     config.agent_name = make_agent_name(config, agent_name_attrs, prefix=args.prefix)
 
     base_modules = {
