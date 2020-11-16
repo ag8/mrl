@@ -265,7 +265,7 @@ def get_ggw_test_agent_config(base_config=default_dqn_config,
 
     :param base_config: the base configuration to use. Default: the default DQN configurations
     :param args: a `Namespace` of arguments to pass.
-    :param agent_name_attrs: the names of the other modules that the agent should know about
+    :param agent_name_attrs: which attributes to make a part of the agent name
     :param kwargs: other keyword arguments
     :return: the configuration for the GoalGridWorld test agent.
     """
@@ -316,6 +316,8 @@ def get_ggw_test_agent_config(base_config=default_dqn_config,
 
     config.update(base_modules)
 
+    # Create training and evaluation environments
+
     if type(args.env) is str:
         env = lambda: gym.make(args.env)
         eval_env = env
@@ -334,6 +336,8 @@ def get_ggw_test_agent_config(base_config=default_dqn_config,
                                        seed=config.seed + 1138)
 
     layer_norm = nn.LayerNorm if (hasattr(args, 'layer_norm') and args.layer_norm) else nn.Identity
+
+    # Add the q value module
 
     e = config.module_eval_env
     config.module_qvalue = PytorchModel(

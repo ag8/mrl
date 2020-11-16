@@ -137,15 +137,31 @@ def merge_args_into_config(args, config: AttrDict):
 
 
 def make_agent_name(config, attr_list, prefix='agent'):
+    """
+    Makes an agent name based on the relevant attributes from the configuration.
+
+    :param config: the agent configuration
+    :param attr_list: the list of attributes to use as part of the name
+    :param prefix: the agent's prefix
+    :return: a string containing a recognizeable agent name
+    """
+
     agent_name = prefix
     attr_set = set()
     for attr in attr_list:
         s = shorten_attr(attr, attr_set)
         attr_set.add(s)
         if attr in config:
-            agent_name += '_' + s + str(config[attr])
+            # Get the function name if the attribute is a function;
+            # otherwise, get the attribute
+            name_addition = str(config[attr].__name__) if callable(config[attr]) else str(config[attr])
+
+            agent_name += '_' + s + name_addition
         elif attr in config.other_args:
-            agent_name += '_' + s + '-' + str(config.other_args[attr])
+            name_addition = str(config.other_args[attr].__name__) if callable(config.other_args[attr]) else str(
+                config.other_args[attr])
+
+            agent_name += '_' + s + '-' + name_addition
         else:
             raise ValueError('Attribute {} not found in config!'.format(attr))
     return agent_name

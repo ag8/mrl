@@ -2,7 +2,7 @@ from envs.goalgridworld.goal_grid import GoalGridWorldEnv
 from mrl.configs.make_discrete_agents import *
 
 
-def make_env(grid_file='room_5x5_empty.txt'):
+def goalgridworld_env(grid_file='room_5x5_empty.txt'):
     """
     This is a custom environment function that creates the GoalGridWorld environment.
 
@@ -20,7 +20,7 @@ def test_sorb():
 
     print("Making agent...")
     config = get_ggw_test_agent_config(args=Namespace(
-        env=make_env,  # load the GoalGridWorld environment
+        env=goalgridworld_env,  # load the GoalGridWorld environment
         parent_folder='/tmp/mrl',  # where to store the logs
         layers=(64, 64,),  # shape of... bugbug what?
         max_episode_steps=1000,  # maximum steps per episode

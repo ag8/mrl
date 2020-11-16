@@ -12,6 +12,8 @@ import mrl
 from mrl.modules.model import PytorchModel
 from mrl.utils.misc import soft_update, flatten_state
 
+import matplotlib.pyplot as plt
+
 
 class QValuePolicy(mrl.Module):
     """ For acting in the environment"""
@@ -102,22 +104,23 @@ class SearchPolicy(mrl.Module):
             ],
             locals=locals())
 
+        # Initialize the replay buffer graph
+        # and the pairwise distance matrix
         self.replay_states_in_graph = []
-        self.pdist = None
+        self.pairwise_distances = None
 
-        self.aggregate = False
-        self.max_dist = 3
-        self.open_loop = False
-        self.weighted_path_planning = False
+        # Parameters (bugbug: read from passed arguments)
+        self.aggregate = False  # How to aggregate the ensemble values
+        self.max_dist = 3  # Maximum search distance
+        self.open_loop = False  # Whether it's open loop (take steps before replanning)
+        self.weighted_path_planning = False  # Whether to use weighted path planning
 
-        banana = True
+        self.no_waypoint_hopping = False  # Is hopping waypoint ok
+        self.cleanup = False  # idk
+        self.attempt_cutoff = 3 * self.max_dist  # idk
+        self.reached_final_waypoint = False  # idk
 
-        self.no_waypoint_hopping = False
-        self.cleanup = False
-        self.attempt_cutoff = 3 * self.max_dist
-        self.reached_final_waypoint = False
-
-        self.graph_exists = False
+        self.graph_exists = False  # Whether the graph has been initialized
 
         self.reset_stats()
 
@@ -141,7 +144,8 @@ class SearchPolicy(mrl.Module):
         # and not the goals that we had at that point in time
         next_states, _ = torch.chunk(next_states, 2, dim=-1)
 
-        self.replay_states_in_graph.append(next_states)
+        for i in range(next_states.shape[0]):
+            self.replay_states_in_graph.append(next_states[i])
 
         # Get the pairwise distances between each pair of points in the current replay buffer.
         # (This is a bit of a huge graph, which is one of the issues with SoRB)
@@ -170,14 +174,16 @@ class SearchPolicy(mrl.Module):
         if not self.open_loop:
             print("Building F_W distances now yo")
 
-            pdist2 = self.agent.algorithm.get_pairwise_dist(self.replay_states_in_graph[0],
+            pdist2 = self.agent.algorithm.get_pairwise_dist(self.get_replay_states_in_graph_as_tensor(),
                                                             aggregate=self.aggregate,
                                                             max_dist=self.max_dist,
                                                             masked=True)
-            # pdist2 = np.max(pdist2, axis=-1)
-            self.rb_distances = scipy.sparse.csgraph.floyd_warshall(pdist2, directed=True)
+            self.replay_buffer_distances = scipy.sparse.csgraph.floyd_warshall(pdist2, directed=True)
 
         self.reset_stats()
+
+    def get_replay_states_in_graph_as_tensor(self):
+        return torch.cat([x.unsqueeze(0) for x in self.replay_states_in_graph])
 
     # def build_graph(self):
     #     self.pdist = torch.zeros([self.agent.config.batch_size, self.agent.config.batch_size])
@@ -194,23 +200,45 @@ class SearchPolicy(mrl.Module):
         self.use_qvalue_target = self.config.get('use_qvalue_target') or False
 
     def __call__(self, state, greedy=False):
-        res = None
+        """
+        Gets an action based on a state.
 
-        # Initial Exploration
+        :param state: the current state
+        :param greedy:
+        :return: the action to take
+        """
+
+        # 1. Initial Exploration
+
+        random_action = None
+
         if self.training:
-            if self.config.get('initial_explore') and len(
-                    self.replay_buffer) < self.config.initial_explore:
-                res = np.array([self.env.action_space.sample() for _ in range(self.env.num_envs)])
+            # If the replay buffer has not been filled up with random samples
+            if self.config.get('initial_explore') and len(self.replay_buffer) < self.config.initial_explore:
+                # Sample a random action
+                random_action = np.array([self.env.action_space.sample() for _ in range(self.env.num_envs)])
             elif hasattr(self, 'ag_curiosity'):
+                # If we need to relabel states, do so
                 state = self.ag_curiosity.relabel_state(state)
 
-        if res is not None:
-            return res
+        # If we're doing random stuff, return the random action
+        if random_action is not None:
+            return random_action
 
-        # No longer warm-up
+        # 2. No longer warm-up
+
+        # If the search graph does not exist yet, create it
         if not self.graph_exists:
             self.build_graph_on_top_of_replay_buffer()
             self.graph_exists = True
+
+        # Now, self.replay_buffer_graph is the graph over the replay buffer states.
+        # print(self.replay_buffer_graph)
+
+        visualize_graph = False
+        if visualize_graph:
+            nx.draw(self.replay_buffer_graph)
+            plt.savefig("rb_graph.png")
 
         goal = state['desired_goal']
         dist_to_goal = self.agent.algorithm.get_dist_to_goal({k: v for k, v in state.items()})[0][0]
@@ -230,7 +258,7 @@ class SearchPolicy(mrl.Module):
                 self.initialize_path(state)
 
             waypoint, waypoint_index = self.get_current_waypoint()
-            state['goal'] = waypoint
+            state['desired_goal'] = waypoint
             dist_to_waypoint = self.agent.get_dist_to_goal({k: [v] for k, v in state.items()})[0]
 
             if self.reached_waypoint(dist_to_waypoint, state, waypoint_index):
@@ -243,7 +271,7 @@ class SearchPolicy(mrl.Module):
                     self.waypoint_counter = len(self.waypoint_indices) - 1
 
                 waypoint, waypoint_index = self.get_current_waypoint()
-                state['goal'] = waypoint
+                state['desired_goal'] = waypoint
                 dist_to_waypoint = self.agent.get_dist_to_goal({k: [v] for k, v in state.items()})[0]
 
             dist_to_goal_via_waypoint = dist_to_waypoint + self.waypoint_to_goal_dist_vec[self.waypoint_counter]
@@ -254,12 +282,12 @@ class SearchPolicy(mrl.Module):
         if (self.no_waypoint_hopping and not self.reached_final_waypoint) or \
                 (dist_to_goal_via_waypoint < dist_to_goal) or \
                 (dist_to_goal > self.max_dist):
-            state['goal'] = waypoint
+            state['desired_goal'] = waypoint
 
             if self.open_loop:
                 self.waypoint_attempts += 1
         else:
-            state['goal'] = goal
+            state['desired_goal'] = goal
 
         return self.agent.algorithm.select_action(state)
 
@@ -268,6 +296,12 @@ class SearchPolicy(mrl.Module):
         return s
 
     def reset_stats(self):
+        """
+        Resets all the statistics of the search.
+
+        :return: nothing
+        """
+
         self.stats = dict(
             path_planning_attempts=0,
             path_planning_fails=0,
@@ -276,9 +310,25 @@ class SearchPolicy(mrl.Module):
         )
 
     def get_stats(self):
+        """
+        Gets the statistics of the search.
+
+        :return: a dictionary of statistics, containing information such as
+                *path_planning_attempts (bugbug explain what each of these means)
+                *path_planning_fails
+                *graph_search_time
+                *localization_fails
+        """
         return self.stats
 
-    def set_cleanup(self, cleanup):  # if True, will prune edges when fail to reach waypoint after `attempt_cutoff`
+    def set_cleanup(self, cleanup: bool):
+        """
+        Set the cleanup parameter.
+        if True, will prune edges when search fails to reach a waypoint after `attempt_cutoff` steps.
+
+        :param cleanup: whether to prune edges, as described above.
+        :return: nothing
+        """
         self.cleanup = cleanup
 
     # def build_rb_graph(self):
@@ -317,13 +367,15 @@ class SearchPolicy(mrl.Module):
                       state['observation'] contains the observations, of size [1, 9, 9, 4].
                       state['desired_goal'] contains the goals, of size [1, 9, 9, 4].
         :param masked: whether it's masked or not
-        :return:
+
+        :return: a set of pairwise distances between the starting points and the replay buffer, and
+                a set of pairwise distances between the replay buffer and the goal points, as a tuple.
         """
 
         # states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
         # (replay_observations, replay_goals) = torch.chunk(self.replay_states_in_graph[0], 2,
         #                                                   dim=-1)  # [batch_size, 9, 9, 4] each
-        replay_states = self.replay_states_in_graph[0]
+        replay_states = self.get_replay_states_in_graph_as_tensor()
 
         start_to_replay_buffer_distance = self.agent.algorithm.get_pairwise_dist(state['observation'],
                                                                                  replay_states,
@@ -342,7 +394,10 @@ class SearchPolicy(mrl.Module):
     def get_closest_waypoint(self, state):
         """
         For closed loop replanning at each step. Uses the precomputed distances
-        `rb_distances` b/w states in `rb_vec`
+        `rb_distances` between states in `rb_vec`
+
+        :param state: the current state
+        :return: the closest waypoint, and the search distance to it.
         """
         observations_to_replay_buffer_distances, replay_buffer_to_goal_distances = self.get_pairwise_distance_to_states_in_replay_graph(
             state)
@@ -351,14 +406,14 @@ class SearchPolicy(mrl.Module):
         # The search_dist tensor should be (B x A x A)
         search_dist = sum([
             np.expand_dims(observations_to_replay_buffer_distances, 2),
-            np.expand_dims(self.rb_distances, 0),
+            np.expand_dims(self.replay_buffer_distances, 0),
             np.expand_dims(np.transpose(replay_buffer_to_goal_distances), 1)
         ])  # elementwise sum
 
         # We assume a batch size of 1.
         min_search_dist = np.min(search_dist)
         waypoint_index = np.argmin(np.min(search_dist, axis=2), axis=1)[0]
-        waypoint = self.replay_states_in_graph[0][waypoint_index]
+        waypoint = self.replay_states_in_graph[waypoint_index]
 
         return waypoint, min_search_dist
 
@@ -928,7 +983,7 @@ class SorbDDQN(BaseQLearning):
         with torch.no_grad():
             state = dict(
                 observation=torch.FloatTensor(state['observation']),
-                goal=torch.FloatTensor(state['goal']),
+                goal=torch.FloatTensor(state['desired_goal']),
             )
 
             return [int(np.argmax(self.get_q_values(state)))]  # list to simulate one env
@@ -936,24 +991,6 @@ class SorbDDQN(BaseQLearning):
 
     def get_q_values(self, state, aggregate='mean'):
         first_dim = state['observation'].shape[0]
-
-        # if first_dim != self.agent.config.batch_size and first_dim != 1:  # sometimes reshaping goes wrong idk  bugbug figure out why
-        #     state['observation'] = state['observation'].unsqueeze(0)
-        #     first_dim = 1
-        #
-        # if state['goal'].shape.__len__() > 4:  # pesky size-1 dimensions out of nowhere
-        #     state['goal'] = torch.squeeze(state['goal'], dim=1)
-        #
-        # if state['observation'].shape.__len__() > 4:  # how does this happen
-        #     state['observation'] = torch.squeeze(state['observation'], dim=1)
-
-        # q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
-        #                        .squeeze(1).squeeze(0)
-        #                        .view(first_dim, -1))
-
-        # For now, we don't know whether we're getting in a goal-stacked or a non-goal-stacked observation.
-        # Thus, figure out whether to stack stuff or not
-        # bugbug figure out why we get different inputs
         last_dim = state['observation'].shape[-1]
 
         if last_dim == 4:
