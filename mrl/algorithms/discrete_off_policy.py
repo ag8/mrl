@@ -120,7 +120,7 @@ class SearchPolicy(mrl.Module):
         self.attempt_cutoff = 3 * self.max_dist  # idk
         self.reached_final_waypoint = False  # idk
 
-        self.graph_exists = False  # Whether the graph has been initialized
+        self.graph_update = 0  # Whether the graph has been initialized
 
         self.training_steps = 0
 
@@ -174,8 +174,8 @@ class SearchPolicy(mrl.Module):
         # Save the graph to a class variable.
         self.replay_buffer_graph = graph
 
-        nx.draw(graph, with_labels=True)
-        plt.show()
+        # nx.draw(graph, with_labels=True)
+        # plt.show()
 
         if not self.open_loop:
             print("Building F_W distances now yo")
@@ -185,6 +185,9 @@ class SearchPolicy(mrl.Module):
                                                             max_dist=self.max_dist,
                                                             masked=True)
             self.replay_buffer_distances = scipy.sparse.csgraph.floyd_warshall(pdist2, directed=True)
+
+            plt.matshow(self.replay_buffer_distances)
+            plt.show()
 
         self.reset_stats()
 
@@ -235,11 +238,10 @@ class SearchPolicy(mrl.Module):
 
         self.training_steps += 1
 
-        # If the search graph does not exist yet, create it
-        self.graph_exists = False
-        if not self.graph_exists:
+        # Occasionally update the graph
+        self.graph_update += 1
+        if self.graph_update % 10 == 0 or self.graph_update == 1:
             self.build_graph_on_top_of_replay_buffer()
-            self.graph_exists = True
 
         # Now, self.replay_buffer_graph is the graph over the replay buffer states.
         # print(self.replay_buffer_graph)
