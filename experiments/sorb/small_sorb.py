@@ -18,12 +18,14 @@ def goalgridworld_env(grid_file='room_5x5_empty.txt'):
 def test_sorb():
     print("Running SoRB!")
 
+    max_episode_steps = 20
+
     print("Making agent...")
     config = get_ggw_test_agent_config(args=Namespace(
         env=goalgridworld_env,  # load the GoalGridWorld environment
         parent_folder='/tmp/mrl',  # where to store the logs
-        layers=(64, 64,),  # shape of... bugbug what?
-        max_episode_steps=1000,  # maximum steps per episode
+        layers=(16, 16,),  # shape of net
+        max_episode_steps=max_episode_steps,  # maximum steps per episode
         batch_size=1,  # the batch size
         warm_up=20,  # how many steps to take randomly in order to fill up the replay buffer
         initial_explore=20,  # bugbug how is this distinct from the previous parameter?
@@ -38,8 +40,8 @@ def test_sorb():
 
     t = time.time()
     print("Training agent...")
-    agent.train(num_steps=500, render=False)
-    # agent.train(num_steps=500, render=True)
+    agent.train(num_steps=200, render=False)
+    agent.train(num_steps=100, render=True)
     # assert len(agent.eval(num_episodes=1).rewards) == 1
     # agent.train(num_steps=10000, render=True)
     # print("Trained agent...")

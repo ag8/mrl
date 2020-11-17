@@ -326,7 +326,7 @@ class GoalGridWorldEnv(gym.GoalEnv):
                 assert reward == env.compute_reward(ob['achieved_goal'], ob['goal'], info)
         """
         if np.sum((achieved_goal - desired_goal) ** 2) > 0:
-            return 0.0
+            return -1.0
         else:
             return 1.0
 

@@ -310,7 +310,7 @@ def get_ggw_test_agent_config(base_config=default_dqn_config,
                          module_state_normalizer=Normalizer(MeanStdNormalizer()),
                          module_replay=OnlineHERBuffer(),
                          module_action_noise=None,
-                         module_algorithm=SorbDDQN(num_atoms=5, v_max=1, v_min=-1)).items()
+                         module_algorithm=SorbDDQN(num_atoms=args.max_episode_steps, v_max=1, v_min=-1)).items()
         if k not in config
     }
 
@@ -344,7 +344,7 @@ def get_ggw_test_agent_config(base_config=default_dqn_config,
         'qvalue',
         lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
                               args.layers, layer_norm, make_activ(config.activ)),
-                       e.action_dim,
+                       args.max_episode_steps,
                        use_layer_init=True)
     )
 

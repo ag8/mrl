@@ -2,6 +2,7 @@ import math
 import os
 import time
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import scipy
@@ -11,8 +12,6 @@ import torch.nn.functional as F
 import mrl
 from mrl.modules.model import PytorchModel
 from mrl.utils.misc import soft_update, flatten_state
-
-import matplotlib.pyplot as plt
 
 
 class QValuePolicy(mrl.Module):
@@ -997,48 +996,48 @@ class SorbDDQN(BaseQLearning):
                 goal=torch.FloatTensor(state['desired_goal']),
             )
 
-            print("Q values for each direction: " + str(self.get_q_values(state)))
-            return [int(np.argmax(self.get_q_values(state)))]  # list to simulate one env bugbug why min
+            print("Q values for each direction: " + str(self.get_expected_q_values(state)))
+            return [int(np.argmax(self.get_expected_q_values(state)))]
             # return self.actor(state).cpu().detach().numpy().flatten()
 
-    def get_q_values(self, state, aggregate='mean'):
+    def get_expected_q_values(self, state, aggregate='mean'):
         first_dim = state['observation'].shape[0]
-        last_dim = state['observation'].shape[-1]
 
-        if last_dim == 4:
-            q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
-                                   .squeeze(1).squeeze(0)
-                                   .view(first_dim, -1))
+        # Get a list of q values.
+        # We use an ensemble of networks, each of which returns a certain set of q values.
+        # The q_values_list is a list of the predictions over all the networks.
 
-            if not isinstance(q_values, list):
-                q_values_list = [q_values]
-            else:
-                q_values_list = q_values
+        q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
+                               .squeeze(1).squeeze(0)
+                               .view(first_dim, -1))
 
-            del q_values
-        elif last_dim == 8:
-            q_value_obs = self.qvalue(state['observation'].view(first_dim, -1))
-            q_value_goal = self.qvalue(state['goal'].view(first_dim, -1))
-            q_values_list = [q_value_obs, q_value_goal]
+        # If we only have one network in the ensemble, its prediction is the entire list.
+        if not isinstance(q_values, list):
+            q_values_list = [q_values]
+        else:
+            q_values_list = q_values
+
+        del q_values
 
         self.use_distributional_rl = False  # bugbug get from config
 
         expected_q_values_list = []
-        if self.use_distributional_rl:
-            for q_values in q_values_list:
-                q_probs = F.softmax(q_values, dim=0)
+        for q_values in q_values_list:
+            if self.use_distributional_rl:
+                q_probs = F.softmax(q_values, dim=1)
                 batch_size = q_probs.shape[0]
                 # NOTE: We want to compute the value of each bin, which is the
                 # negative distance. Without properly negating this, the actor is
                 # optimized to take the *worst* actions.
-                neg_bin_range = -torch.arange(1, self.num_atoms + 1, dtype=torch.float)
-                tiled_bin_range = neg_bin_range.unsqueeze(0).repeat(batch_size, 1)
+                bin_range = torch.arange(1, self.num_atoms + 1, dtype=torch.float)
+                neg_bin_range = -1.0 * bin_range
+                tiled_bin_range = neg_bin_range.unsqueeze(0).repeat([batch_size, 1])
                 assert q_probs.shape == tiled_bin_range.shape
                 # Take the inner product between these two tensors
                 expected_q_values = torch.sum(q_probs * tiled_bin_range, dim=1, keepdim=True)
                 expected_q_values_list.append(expected_q_values)
-        else:
-            expected_q_values_list = [-x for x in q_values_list]
+            else:
+                expected_q_values_list.append(-q_values)
 
         expected_q_values = torch.stack(expected_q_values_list)
 
@@ -1175,7 +1174,7 @@ class SorbDDQN(BaseQLearning):
                 observation=torch.FloatTensor(state['observation']),
                 goal=torch.FloatTensor(state['desired_goal']),
             )
-            q_values = self.get_q_values(state, **kwargs)
+            q_values = self.get_expected_q_values(state, **kwargs)
             return -1.0 * q_values.cpu().detach().numpy()
 
     def reset_stats(self):
