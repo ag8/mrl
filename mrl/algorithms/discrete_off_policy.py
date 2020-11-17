@@ -111,7 +111,7 @@ class SearchPolicy(mrl.Module):
 
         # Parameters (bugbug: read from passed arguments)
         self.aggregate = False  # How to aggregate the ensemble values
-        self.max_dist = 3  # Maximum search distance
+        self.max_dist = 1  # Maximum search distance
         self.open_loop = False  # Whether it's open loop (take steps before replanning)
         self.weighted_path_planning = False  # Whether to use weighted path planning
 
@@ -173,6 +173,9 @@ class SearchPolicy(mrl.Module):
 
         # Save the graph to a class variable.
         self.replay_buffer_graph = graph
+
+        nx.draw(graph, with_labels=True)
+        plt.show()
 
         if not self.open_loop:
             print("Building F_W distances now yo")
@@ -593,7 +596,7 @@ class DQN(BaseQLearning):
         q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
 
         # Get the squared bellman error
-        td_loss = F.mse_loss(q, target)
+        td_loss = -F.mse_loss(q, target)
 
         # Clear previous gradients before the backward pass
         self.q_value_optimizer.zero_grad()

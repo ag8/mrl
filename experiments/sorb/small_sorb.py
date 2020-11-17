@@ -25,8 +25,8 @@ def test_sorb():
         layers=(64, 64,),  # shape of... bugbug what?
         max_episode_steps=1000,  # maximum steps per episode
         batch_size=1,  # the batch size
-        warm_up=80,  # how many steps to take randomly in order to fill up the replay buffer
-        initial_explore=80,  # bugbug how is this distinct from the previous parameter?
+        warm_up=20,  # how many steps to take randomly in order to fill up the replay buffer
+        initial_explore=20,  # bugbug how is this distinct from the previous parameter?
         num_envs=1,  # number of training environments
         num_eval_envs=1,  # number of testing environments
         use_distributional_rl=True,  # whether to use distributional RL (if false, it will just use the clipping trick)
@@ -38,8 +38,8 @@ def test_sorb():
 
     t = time.time()
     print("Training agent...")
-    agent.train(num_steps=500, render=False)
-    agent.train(num_steps=100, render=True)
+    # agent.train(num_steps=500, render=False)
+    agent.train(num_steps=500, render=True)
     # assert len(agent.eval(num_episodes=1).rewards) == 1
     # agent.train(num_steps=10000, render=True)
     # print("Trained agent...")
