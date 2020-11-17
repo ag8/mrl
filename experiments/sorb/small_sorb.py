@@ -38,7 +38,7 @@ def test_sorb():
 
     t = time.time()
     print("Training agent...")
-    agent.train(num_steps=4000, render=False)
+    agent.train(num_steps=500, render=False)
     agent.train(num_steps=100, render=True)
     # assert len(agent.eval(num_episodes=1).rewards) == 1
     # agent.train(num_steps=10000, render=True)

@@ -122,6 +122,8 @@ class SearchPolicy(mrl.Module):
 
         self.graph_exists = False  # Whether the graph has been initialized
 
+        self.training_steps = 0
+
         self.reset_stats()
 
     def build_graph_on_top_of_replay_buffer(self):
@@ -144,6 +146,7 @@ class SearchPolicy(mrl.Module):
         # and not the goals that we had at that point in time
         next_states, _ = torch.chunk(next_states, 2, dim=-1)
 
+        self.replay_states_in_graph = []
         for i in range(next_states.shape[0]):
             self.replay_states_in_graph.append(next_states[i])
 
@@ -227,7 +230,10 @@ class SearchPolicy(mrl.Module):
 
         # 2. No longer warm-up
 
+        self.training_steps += 1
+
         # If the search graph does not exist yet, create it
+        self.graph_exists = False
         if not self.graph_exists:
             self.build_graph_on_top_of_replay_buffer()
             self.graph_exists = True
@@ -282,7 +288,7 @@ class SearchPolicy(mrl.Module):
         if (self.no_waypoint_hopping and not self.reached_final_waypoint) or \
                 (dist_to_goal_via_waypoint < dist_to_goal) or \
                 (dist_to_goal > self.max_dist):
-            state['desired_goal'] = waypoint
+            state['desired_goal'] = waypoint.unsqueeze(0)
 
             if self.open_loop:
                 self.waypoint_attempts += 1
@@ -986,7 +992,8 @@ class SorbDDQN(BaseQLearning):
                 goal=torch.FloatTensor(state['desired_goal']),
             )
 
-            return [int(np.argmax(self.get_q_values(state)))]  # list to simulate one env
+            print("Q values for each direction: " + str(self.get_q_values(state)))
+            return [int(np.argmax(self.get_q_values(state)))]  # list to simulate one env bugbug why min
             # return self.actor(state).cpu().detach().numpy().flatten()
 
     def get_q_values(self, state, aggregate='mean'):
@@ -1014,7 +1021,7 @@ class SorbDDQN(BaseQLearning):
         expected_q_values_list = []
         if self.use_distributional_rl:
             for q_values in q_values_list:
-                q_probs = F.softmax(q_values, dim=0).unsqueeze(0)
+                q_probs = F.softmax(q_values, dim=0)
                 batch_size = q_probs.shape[0]
                 # NOTE: We want to compute the value of each bin, which is the
                 # negative distance. Without properly negating this, the actor is
@@ -1026,7 +1033,7 @@ class SorbDDQN(BaseQLearning):
                 expected_q_values = torch.sum(q_probs * tiled_bin_range, dim=1, keepdim=True)
                 expected_q_values_list.append(expected_q_values)
         else:
-            expected_q_values_list = q_values_list
+            expected_q_values_list = [-x for x in q_values_list]
 
         expected_q_values = torch.stack(expected_q_values_list)
 
