@@ -18,7 +18,7 @@ def goalgridworld_env(grid_file='room_5x5_empty.txt'):
 def test_sorb():
     print("Running SoRB!")
 
-    max_episode_steps = 20
+    max_episode_steps = 10
 
     print("Making agent...")
     config = get_ggw_test_agent_config(args=Namespace(
