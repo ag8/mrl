@@ -185,8 +185,8 @@ class SearchPolicy(mrl.Module):
                                                             masked=True)
             self.replay_buffer_distances = scipy.sparse.csgraph.floyd_warshall(pdist2, directed=True)
 
-            plt.matshow(self.replay_buffer_distances)
-            plt.show()
+            # plt.matshow(self.replay_buffer_distances)
+            # plt.show()
 
         self.reset_stats()
 
@@ -341,35 +341,6 @@ class SearchPolicy(mrl.Module):
         """
         self.cleanup = cleanup
 
-    # def build_rb_graph(self):
-    #     print("Building graph")
-    #
-    #     states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
-    #     (replay_states, replay_goals) = torch.chunk(states, 2, dim=-1)  # [batch_size, 9, 9, 4] each
-    #
-    #     self.replay_states_in_graph = replay_states
-    #
-    #     g = nx.DiGraph()
-    #     # pdist_combined = np.max(np.array(self.pdist), axis=0)
-    #     for i, s_i in enumerate(self.replay_states_in_graph):
-    #         for j, s_j in enumerate(self.replay_states_in_graph):
-    #             length = self.pdist[i, j]
-    #             if length < self.max_dist:
-    #                 g.add_edge(i, j, weight=length)
-    #
-    #     self.replay_buffer_graph = g
-    #
-    #     if not self.open_loop:
-    #         print("Building F_W distances now yo")
-    #
-    #         pdist2 = self.agent.get_pairwise_dist(self.replay_states_in_graph,
-    #                                               aggregate=self.aggregate,
-    #                                               max_search_steps=self.max_search_steps,
-    #                                               masked=True)
-    #         self.rb_distances = scipy.sparse.csgraph.floyd_warshall(pdist2, directed=True)
-    #
-    #     self.reset_stats()
-
     def get_pairwise_distance_to_states_in_replay_graph(self, state, masked=True):
         """
 
@@ -382,9 +353,6 @@ class SearchPolicy(mrl.Module):
                 a set of pairwise distances between the replay buffer and the goal points, as a tuple.
         """
 
-        # states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(self.agent.config.batch_size)
-        # (replay_observations, replay_goals) = torch.chunk(self.replay_states_in_graph[0], 2,
-        #                                                   dim=-1)  # [batch_size, 9, 9, 4] each
         replay_states = self.get_replay_states_in_graph_as_tensor()
 
         start_to_replay_buffer_distance = self.agent.algorithm.get_pairwise_dist(state['observation'],
@@ -727,169 +695,6 @@ class DistributionalQNetwork(BaseQLearning):
         self.q_value_optimizer.step()
 
 
-class SorbDQN(DQN):
-    def __init__(self,
-                 time_step_spec,
-                 action_spec,
-                 ou_stddev=1.0,
-                 ou_damping=1.0,
-                 target_update_tau=0.05,
-                 target_update_period=5,
-                 max_episode_steps=None,
-                 ensemble_size=3,
-                 combine_ensemble_method='min',
-                 use_distributional_rl=True):
-
-        assert max_episode_steps is not None
-        self._time_step_spec = time_step_spec
-        self._action_spec = action_spec
-        self._max_episode_steps = max_episode_steps
-        self._ensemble_size = ensemble_size
-        self._use_distributional_rl = use_distributional_rl
-
-        self._ou_stddev = ou_stddev
-        self._ou_damping = ou_damping
-        self._target_update_tau = target_update_tau
-        self._target_update_period = target_update_period
-
-    def _setup(self):
-        pass
-
-    def select_action(self, state):
-        with torch.no_grad():
-            state = dict(
-                observation=torch.FloatTensor(state['observation'].reshape(1, -1)),
-                goal=torch.FloatTensor(state['goal'].reshape(1, -1)),
-            )
-            return self.actor(state).cpu().detach().numpy().flatten()
-
-    def get_q_values(self, state, aggregate='mean'):
-        q_values = super().get_q_values(state)
-        if not isinstance(q_values, list):
-            q_values_list = [q_values]
-        else:
-            q_values_list = q_values
-
-        expected_q_values_list = []
-        if self.use_distributional_rl:
-            for q_values in q_values_list:
-                q_probs = F.softmax(q_values, dim=1)
-                batch_size = q_probs.shape[0]
-                # NOTE: We want to compute the value of each bin, which is the
-                # negative distance. Without properly negating this, the actor is
-                # optimized to take the *worst* actions.
-                neg_bin_range = -torch.arange(1, self.num_bins + 1, dtype=torch.float)
-                tiled_bin_range = neg_bin_range.unsqueeze(0).repeat(batch_size, 1)
-                assert q_probs.shape == tiled_bin_range.shape
-                # Take the inner product between these two tensors
-                expected_q_values = torch.sum(q_probs * tiled_bin_range, dim=1, keepdim=True)
-                expected_q_values_list.append(expected_q_values)
-        else:
-            expected_q_values_list = q_values_list
-
-        expected_q_values = torch.stack(expected_q_values_list)
-        if aggregate is not None:
-            if aggregate == 'mean':
-                expected_q_values = torch.mean(expected_q_values, dim=0)
-            elif aggregate == 'min':
-                expected_q_values, _ = torch.min(expected_q_values, dim=0)
-            else:
-                raise ValueError
-
-        if not self.use_distributional_rl:
-            # Clip the q values if not using distributional RL. If using
-            # distributional RL, the q values are implicitly clipped.
-            min_q_value = -1.0 * self.num_bins
-            max_q_value = 0.0
-            expected_q_values = torch.clamp(expected_q_values, min_q_value, max_q_value)
-
-        return expected_q_values
-
-    def critic_loss(self, current_q, target_q, reward, done):
-        if not isinstance(current_q, list):
-            current_q_list = [current_q]
-            target_q_list = [target_q]
-        else:
-            current_q_list = current_q
-            target_q_list = target_q
-
-        critic_loss_list = []
-        for current_q, target_q in zip(current_q_list, target_q_list):
-            if self.use_distributional_rl:
-                # Compute distributional td targets
-                target_q_probs = F.softmax(target_q, dim=1)
-                batch_size = target_q_probs.shape[0]
-                one_hot = torch.zeros(batch_size, self.num_bins)
-                one_hot[:, 0] = 1
-
-                # Calculate the shifted probabilities
-                # Fist column: Since episode didn't terminate, probability that the
-                # distance is 1 equals 0.
-                col_1 = torch.zeros((batch_size, 1))
-                # Middle columns: Simply the shifted probabilities.
-                col_middle = target_q_probs[:, :-2]
-                # Last column: Probability of taking at least n steps is sum of
-                # last two columns in unshifted predictions:
-                col_last = torch.sum(target_q_probs[:, -2:], dim=1, keepdim=True)
-                shifted_target_q_probs = torch.cat([col_1, col_middle, col_last], dim=1)
-                assert one_hot.shape == shifted_target_q_probs.shape
-                td_targets = torch.where(done.bool(), one_hot, shifted_target_q_probs).detach()
-
-                critic_loss = torch.mean(-torch.sum(td_targets * torch.log_softmax(current_q, dim=1),
-                                                    dim=1))  # https://github.com/tensorflow/tensorflow/issues/21271
-            else:
-                critic_loss = super().critic_loss(current_q, target_q, reward, done)
-            critic_loss_list.append(critic_loss)
-        critic_loss = torch.mean(torch.stack(critic_loss_list))
-        return critic_loss
-
-    def get_dist_to_goal(self, state, **kwargs):
-        with torch.no_grad():
-            state = dict(
-                observation=torch.FloatTensor(state['observation']),
-                goal=torch.FloatTensor(state['goal']),
-            )
-            q_values = self.get_q_values(state, **kwargs)
-            return -1.0 * q_values.cpu().detach().numpy().squeeze(-1)
-
-    def get_pairwise_dist(self, obs_vec, goal_vec=None, aggregate='mean', max_search_steps=7, masked=False):
-        """Estimates the pairwise distances.
-          obs_vec: Array containing observations
-          goal_vec: (optional) Array containing a second set of observations. If
-                    not specified, computes the pairwise distances between obs_tensor and
-                    itself.
-          aggregate: (str) How to combine the predictions from the ensemble. Options
-                     are to take the minimum predicted q value (i.e., the maximum distance),
-                     the mean, or to simply return all the predictions.
-          max_search_steps: (int)
-          masked: (bool) Whether to ignore edges that are too long, as defined by
-                  max_search_steps.
-        """
-        if goal_vec is None:
-            goal_vec = obs_vec
-
-        dist_matrix = []
-        for obs_index in range(len(obs_vec)):
-            obs = obs_vec[obs_index]
-            # obs_repeat_tensor = np.ones_like(goal_vec) * np.expand_dims(obs, 0)
-            obs_repeat_tensor = np.repeat([obs], len(goal_vec), axis=0)
-            state = {'observation': obs_repeat_tensor, 'goal': goal_vec}
-            dist = self.get_dist_to_goal(state, aggregate=aggregate)
-            dist_matrix.append(dist)
-
-        pairwise_dist = np.stack(dist_matrix)
-        if aggregate is None:
-            pairwise_dist = np.transpose(pairwise_dist, [1, 0, 2])
-        # else:
-        #     pairwise_dist = np.expand_dims(pairwise_dist, 0)
-
-        if masked:
-            mask = (pairwise_dist > max_search_steps)
-            return np.where(mask, np.full(pairwise_dist.shape, np.inf), pairwise_dist)
-        else:
-            return pairwise_dist
-
-
 class SorbDDQN(BaseQLearning):
     def __init__(self, num_atoms, v_max, v_min):
         """
@@ -989,6 +794,17 @@ class SorbDDQN(BaseQLearning):
 
         return
 
+    def get_weighted_average_of_bins(self, bin_distribution):
+        # sm = F.softmax(-bin_distribution, dim=0)
+        sm = bin_distribution
+
+        sum = 0
+
+        for i in range(len(sm)):
+            sum += i * sm[i]
+
+        return sum / torch.sum(sm)
+
     def select_action(self, state):
         with torch.no_grad():
             state = dict(
@@ -996,8 +812,16 @@ class SorbDDQN(BaseQLearning):
                 goal=torch.FloatTensor(state['desired_goal']),
             )
 
-            print("Q values for each direction: " + str(self.get_expected_q_values(state)))
-            return [int(np.argmax(self.get_expected_q_values(state)))]
+            q_values = self.get_expected_q_values(state).view(4, 10)  # bugbug get from parameters
+
+            directional_q_values = [self.get_weighted_average_of_bins(q_values[i]) for i in range(q_values.shape[0])]
+            print("Q values for each direction: " + str(directional_q_values))
+
+
+            return [int(np.argmax(directional_q_values))]
+
+            # return np.array([self.env.action_space.sample() for _ in range(self.env.num_envs)])
+            # return [int(np.argmax(self.get_expected_q_values(state)))]
             # return self.actor(state).cpu().detach().numpy().flatten()
 
     def get_expected_q_values(self, state, aggregate='mean'):

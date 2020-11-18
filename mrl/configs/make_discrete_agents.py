@@ -344,7 +344,7 @@ def get_ggw_test_agent_config(base_config=default_dqn_config,
         'qvalue',
         lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
                               args.layers, layer_norm, make_activ(config.activ)),
-                       args.max_episode_steps,
+                       e.action_dim * args.max_episode_steps,
                        use_layer_init=True)
     )
 
