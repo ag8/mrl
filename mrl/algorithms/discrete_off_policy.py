@@ -695,6 +695,71 @@ class DistributionalQNetwork(BaseQLearning):
         self.q_value_optimizer.step()
 
 
+def squeeze_dict(dict):
+    for key in dict.keys():
+        dict[key] = dict[key].squeeze()
+
+    return dict
+
+
+def get_state_illustration(state):
+    state = squeeze_dict(state)
+
+    final_matrix = np.zeros((state['observation'].shape[0], state['observation'].shape[1]))
+
+    dim1, dim2, dim3 = state['observation'].shape
+
+    for i in range(dim1):
+        for j in range(dim2):
+            if state['observation'][i][j][1] == 1:  # it's the agent
+                final_matrix[i][j] = 200
+            elif state['observation'][i][j][2] == 1:  # it's a wall
+                final_matrix[i][j] = 100
+
+            if state['goal'][i][j][1] == 1:  # it's the goal!
+                if final_matrix[i][j] == 200:  # reached it
+                    final_matrix[i][j] = 0
+                else:
+                    final_matrix[i][j] = 50
+
+    return final_matrix
+
+
+global c
+c = 0
+
+
+def illustrate(state, q_values, directional_q_values):
+    global c
+
+    # First, draw what's happening in terms of location and goals
+    fig, axs = plt.subplots(3, 3)
+
+    axs[0, 0].axis('off')
+    axs[0, 2].axis('off')
+    axs[2, 0].axis('off')
+    axs[2, 2].axis('off')
+    axs[1, 1].matshow(get_state_illustration(state))
+
+    axs[1, 0].set_title("E: " + str(round(float(directional_q_values[0]), 2)))
+    axs[1, 0].bar(range(len(q_values[0])), -q_values[0].numpy())  # Left
+
+    axs[2, 1].set_title("E: " + str(round(float(directional_q_values[1]), 2)))
+    axs[2, 1].bar(range(len(q_values[1])), -q_values[1].numpy())  # Down
+
+    axs[1, 2].set_title("E: " + str(round(float(directional_q_values[2]), 2)))
+    axs[1, 2].bar(range(len(q_values[2])), -q_values[2].numpy())  # Right
+
+    axs[0, 1].set_title("E: " + str(round(float(directional_q_values[3]), 2)))
+    axs[0, 1].bar(range(len(q_values[3])), -q_values[3].numpy())  # Up
+
+    fig.suptitle("Non-random step " + str(c))
+
+    plt.savefig("step_" + str(c).zfill(3) + ".png")
+    c += 1
+    # plt.show()
+
+
 class SorbDDQN(BaseQLearning):
     def __init__(self, num_atoms, v_max, v_min):
         """
@@ -814,11 +879,14 @@ class SorbDDQN(BaseQLearning):
 
             q_values = self.get_expected_q_values(state).view(4, 10)  # bugbug get from parameters
 
+            print(q_values)
+
             directional_q_values = [self.get_weighted_average_of_bins(q_values[i]) for i in range(q_values.shape[0])]
             print("Q values for each direction: " + str(directional_q_values))
 
+            illustrate(state, q_values, directional_q_values)
 
-            return [int(np.argmax(directional_q_values))]
+            return [int(np.argmin(directional_q_values))]
 
             # return np.array([self.env.action_space.sample() for _ in range(self.env.num_envs)])
             # return [int(np.argmax(self.get_expected_q_values(state)))]

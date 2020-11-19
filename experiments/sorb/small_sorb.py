@@ -1,3 +1,5 @@
+import imageio
+
 from envs.goalgridworld.goal_grid import GoalGridWorldEnv
 from mrl.configs.make_discrete_agents import *
 
@@ -24,11 +26,11 @@ def test_sorb():
     config = get_ggw_test_agent_config(args=Namespace(
         env=goalgridworld_env,  # load the GoalGridWorld environment
         parent_folder='/tmp/mrl',  # where to store the logs
-        layers=(16, 16,),  # shape of net
+        layers=(16,),  # shape of net
         max_episode_steps=max_episode_steps,  # maximum steps per episode
         batch_size=1,  # the batch size
-        warm_up=20,  # how many steps to take randomly in order to fill up the replay buffer
-        initial_explore=20,  # bugbug how is this distinct from the previous parameter?
+        warm_up=300,  # how many steps to take randomly in order to fill up the replay buffer
+        initial_explore=300,  # bugbug how is this distinct from the previous parameter?
         num_envs=1,  # number of training environments
         num_eval_envs=1,  # number of testing environments
         use_distributional_rl=True,  # whether to use distributional RL (if false, it will just use the clipping trick)
@@ -40,8 +42,18 @@ def test_sorb():
 
     t = time.time()
     print("Training agent...")
-    agent.train(num_steps=200, render=False)
-    agent.train(num_steps=100, render=True)
+    agent.train(num_steps=400, render=False)
+
+    png_dir = '.'
+    images = []
+    for file_name in sorted(os.listdir(png_dir)):
+        if file_name.endswith('.png'):
+            file_path = os.path.join(png_dir, file_name)
+            images.append(imageio.imread(file_path))
+            # os.remove(file_path)
+    imageio.mimsave('movie.gif', images, fps=3)
+
+    # agent.train(num_steps=30, render=True)
     # assert len(agent.eval(num_episodes=1).rewards) == 1
     # agent.train(num_steps=10000, render=True)
     # print("Trained agent...")
