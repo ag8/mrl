@@ -137,9 +137,9 @@ class SearchPolicy(mrl.Module):
 
         # Sample everything from the replay buffer
         # (we build the graph on top of the whole thing so far)
-        states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(len(
-            self.replay_buffer))
-        # states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(17)
+        # states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(len(
+        #     self.replay_buffer))
+        states, actions, rewards, next_states, gammas = self.agent.replay_buffer.sample(17)
 
         # In our replay buffer, we care about the states,
         # and not the goals that we had at that point in time
@@ -725,12 +725,12 @@ def get_state_illustration(state):
     return final_matrix
 
 
-global c
-c = 0
+global count
+count = 0
 
 
 def illustrate(state, q_values, directional_q_values):
-    global c
+    global count
 
     # First, draw what's happening in terms of location and goals
     fig, axs = plt.subplots(3, 3)
@@ -753,11 +753,11 @@ def illustrate(state, q_values, directional_q_values):
     axs[0, 1].set_title("E: " + str(round(float(directional_q_values[3]), 2)))
     axs[0, 1].bar(range(len(q_values[3])), -q_values[3].numpy())  # Up
 
-    fig.suptitle("Non-random step " + str(c))
+    fig.suptitle("Non-random step " + str(count))
 
-    plt.savefig("step_" + str(c).zfill(3) + ".png")
-    c += 1
+    plt.savefig("step_" + str(count).zfill(3) + ".png")
     # plt.show()
+    plt.close(fig)
 
 
 class SorbDDQN(BaseQLearning):
@@ -879,12 +879,16 @@ class SorbDDQN(BaseQLearning):
 
             q_values = self.get_expected_q_values(state).view(4, 10)  # bugbug get from parameters
 
-            print(q_values)
+            # print(q_values)
 
             directional_q_values = [self.get_weighted_average_of_bins(q_values[i]) for i in range(q_values.shape[0])]
-            print("Q values for each direction: " + str(directional_q_values))
+            # print("Q values for each direction: " + str(directional_q_values))
 
-            illustrate(state, q_values, directional_q_values)
+            global count
+            count += 1
+            if count > 2000:
+                print("Illustrating")
+                illustrate(state, q_values, directional_q_values)
 
             return [int(np.argmin(directional_q_values))]
 
@@ -899,9 +903,13 @@ class SorbDDQN(BaseQLearning):
         # We use an ensemble of networks, each of which returns a certain set of q values.
         # The q_values_list is a list of the predictions over all the networks.
 
-        q_values = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
-                               .squeeze(1).squeeze(0)
-                               .view(first_dim, -1))
+        q_values = []
+        for network in [self.qvalue, self.qvaluee, self.qvalueee]:
+            q_value = network(torch.cat((state['observation'], state['goal']), dim=-1)
+                              .squeeze(1).squeeze(0)
+                              .view(first_dim, -1))
+
+            q_values.append(q_value)
 
         # If we only have one network in the ensemble, its prediction is the entire list.
         if not isinstance(q_values, list):
