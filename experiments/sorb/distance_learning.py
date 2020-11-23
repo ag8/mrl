@@ -42,7 +42,7 @@ def test_sorb():
 
     t = time.time()
     print("Training agent...")
-    agent.train(num_steps=30000, render=False)
+    agent.train(num_steps=300000, render=False)
 
     # png_dir = '.'
     # images = []
