@@ -49,16 +49,17 @@ class QValuePolicy(mrl.Module):
         state = self.torch(state)
 
         if self.use_qvalue_target:
-            q_values = self.numpy(self.qvalue_target(state))
+            q_values = self.numpy(self.qvalue_target(state.view(-1))).reshape([4, 10])
         else:
-            q_values = self.numpy(self.qvalue(state))
+            q_values = self.numpy(self.qvalue(state.view(-1))).reshape([4, 10])
 
         if self.training and not greedy and np.random.random() < self.config.random_action_prob(
                 steps=self.config.env_steps):
             # print("The action space is: " + str(self.env.action_space) + " with " + str(self.env.action_space.n) + " choices")
             action = np.random.randint(self.env.action_space.n, size=[self.env.num_envs])
         else:
-            action = np.argmax(q_values, -1)  # Convert to int
+            d_q_v = [get_weighted_average_of_bins(q_values[i]) for i in range(q_values.shape[0])]
+            action = [np.argmax(d_q_v, -1)]  # Convert to int
 
         return action
 
@@ -514,6 +515,8 @@ class BaseQLearning(mrl.Module):
             # If we should update the target network, do it
             if self.config.opt_steps % self.config.target_network_update_freq == 0:
                 for target_model, model in self.targets_and_models:
+                    # print("Updating target")
+
                     # Update all the parameters of the target model
                     # according to the following equation, there b is the update factor:
                     # Q_target <- (1 - b) * Q_target + b * ( TODO )
@@ -760,6 +763,18 @@ def illustrate(state, q_values, directional_q_values):
     plt.close(fig)
 
 
+def get_weighted_average_of_bins(bin_distribution):
+    # sm = F.softmax(-bin_distribution, dim=0)
+    sm = bin_distribution
+
+    sum = 0
+
+    for i in range(len(sm)):
+        sum += i * sm[i]
+
+    return sum / np.sum(sm)
+
+
 class SorbDDQN(BaseQLearning):
     def __init__(self, num_atoms, v_max, v_min):
         """
@@ -798,8 +813,100 @@ class SorbDDQN(BaseQLearning):
 
         return projected_distribution
 
+    def get_loss(self, q, q_next, rewards, gammas, dones):
+        if not isinstance(q, list):
+            current_q_list = [q]
+            target_q_list = [q_next]
+        else:
+            current_q_list = q
+            target_q_list = q_next
+
+        self.use_distributional_rl = True
+
+        critic_loss_list = []
+        for current_q, target_q in zip(current_q_list, target_q_list):
+            if self.use_distributional_rl:
+                # Compute distributional td targets
+                target_q_probs = F.softmax(target_q, dim=1)
+                batch_size = target_q_probs.shape[0]
+                action_dim = target_q_probs.shape[1]
+                one_hot = torch.zeros(batch_size, action_dim, self.num_atoms)
+                one_hot[:, :, 0] = 1
+
+                # Calculate the shifted probabilities
+                # Fist column: Since episode didn't terminate, probability that the
+                # distance is 1 equals 0.
+                col_1 = torch.zeros((batch_size, action_dim, 1))
+                # Middle columns: Simply the shifted probabilities.
+                col_middle = target_q_probs[:, :, :-2]
+                # Last column: Probability of taking at least n steps is sum of
+                # last two columns in unshifted predictions:
+                col_last = torch.sum(target_q_probs[:, :, -2:], dim=-1, keepdim=True)
+                shifted_target_q_probs = torch.cat([col_1, col_middle, col_last], dim=-1)
+                assert one_hot.shape == shifted_target_q_probs.shape
+                td_targets = torch.where(dones.bool(), one_hot, shifted_target_q_probs).detach()
+
+                critic_loss = torch.mean(-torch.sum(td_targets * torch.log_softmax(current_q, dim=1),
+                                                    dim=1))  # https://github.com/tensorflow/tensorflow/issues/21271
+            else:
+                critic_loss = super().critic_loss(current_q, target_q, rewards, dones)
+            critic_loss_list.append(critic_loss)
+        critic_loss = torch.mean(torch.stack(critic_loss_list))
+        return critic_loss
+
     def optimize_from_batch(self, states, actions, rewards, next_states, gammas,
                             dones=None):  # bugbug currently dqn optimizer
+        """
+        The optimization method that gets called from _optimize in the BaseQLearning module.
+
+        :param states:
+        :param actions:
+        :param rewards:
+        :param next_states:
+        :param gammas:
+        :return: nothing
+        """
+        # The Q_next value is what the target q network applied to the next states gives us
+        # We detach it since it's not relevant for gradient computations
+        q_next = self.qvalue_target(next_states.view(self.agent.config.batch_size, -1)).detach().view(self.agent.config.batch_size, 4, 10)
+
+        # # Minimum modification to get double q learning to work
+        # # (Hasselt, Guez, and Silver, 2016: https://arxiv.org/pdf/1509.06461.pdf)
+        # if self.config.double_q:
+        #     best_actions = torch.argmax(self.qvalue(next_states), dim=-1, keepdim=True)
+        #     q_next = q_next.gather(-1, best_actions)
+        # else:
+        #     q_next = q_next.max(-1, keepdims=True)[0]  # Assuming action dim is the last dimension
+
+        # Get the actual Q function for the real network on the current states
+        q = self.qvalue(states.view(self.agent.config.batch_size, -1)).view(self.agent.config.batch_size, 4, 10)
+
+        # # Index the rows of the q-values by the batch-list of actions
+        # # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
+        # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
+
+        # Get the squared bellman error
+        loss = self.get_loss(q, q_next, rewards, gammas, dones)
+
+        # Clear previous gradients before the backward pass
+        self.q_value_optimizer.zero_grad()
+
+        # Run the backward pass
+        loss.backward()
+
+        # Grad clipping
+        # if self.config.grad_norm_clipping > 0.:
+        #     torch.nn.utils.clip_grad_norm_(self.qvalue_params, self.config.grad_norm_clipping)
+        # if self.config.grad_value_clipping > 0.:
+        #     torch.nn.utils.clip_grad_value_(self.qvalue_params, self.config.grad_value_clipping)
+
+        # Run the update
+        self.q_value_optimizer.step()
+
+        return
+
+    def optimize_from_batch_old(self, states, actions, rewards, next_states, gammas,
+                                dones=None):  # bugbug currently dqn optimizer
         """
         The optimization method that gets called from _optimize in the BaseQLearning module.
 
@@ -858,17 +965,6 @@ class SorbDDQN(BaseQLearning):
         self.q_value_optimizer.step()
 
         return
-
-    def get_weighted_average_of_bins(self, bin_distribution):
-        # sm = F.softmax(-bin_distribution, dim=0)
-        sm = bin_distribution
-
-        sum = 0
-
-        for i in range(len(sm)):
-            sum += i * sm[i]
-
-        return sum / torch.sum(sm)
 
     def select_action(self, state):
         with torch.no_grad():
