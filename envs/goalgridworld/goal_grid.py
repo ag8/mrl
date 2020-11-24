@@ -32,7 +32,7 @@ class GoalGridWorldEnv(gym.GoalEnv):
 
     MOVE_DIRECTION = [[0, -1], [1, 0], [0, 1], [-1, 0]]  # up, right, down, left
 
-    def __init__(self, grid_size=16, max_step=100, grid_file=None, random_init_loc=True, agent_loc_file=None,
+    def __init__(self, grid_size=16, max_step=100, grid_file=None, random_init_loc=True, random_goal_loc=True, agent_loc_file=None,
                  goal_file=None, seed=1337):
         # Action enumeration
         self.actions = GoalGridWorldEnv.Actions
@@ -45,6 +45,8 @@ class GoalGridWorldEnv(gym.GoalEnv):
 
         # Whether to change initialization of the agent
         self.random_init_loc = random_init_loc
+
+        self.random_goal_loc = random_goal_loc
 
         # Environment configuration
         self.grid_size = grid_size
@@ -136,7 +138,10 @@ class GoalGridWorldEnv(gym.GoalEnv):
             self.agent_pos = self._sample_goal_loc()
         else:
             self.agent_pos = [0, 0]
-        self.goal_loc = self._sample_goal_loc()
+        if self.random_goal_loc:
+            self.goal_loc = self._sample_goal_loc()
+        else:
+            self.goal_loc = [2, 2]
         self.goal = np.copy(self.grid)
         self.goal[self.goal_loc[0], self.goal_loc[1]] = self.objects.agent
 
@@ -204,9 +209,9 @@ class GoalGridWorldEnv(gym.GoalEnv):
 
     def _get_reward(self):
         if self.agent_pos[0] == self.goal_loc[0] and self.agent_pos[1] == self.goal_loc[1]:
-            return 1.0
-        else:
             return 0.0
+        else:
+            return -1.0
 
     def _get_obs(self):
         """

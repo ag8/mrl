@@ -2,7 +2,7 @@ from envs.goalgridworld.goal_grid import GoalGridWorldEnv
 from mrl.configs.make_discrete_agents import *
 
 
-def goalgridworld_env(grid_file='room_5x5_empty.txt'):
+def goalgridworld_env(grid_file='room_3x3_empty.txt'):
     """
     This is a custom environment function that creates the GoalGridWorld environment.
 
@@ -10,7 +10,9 @@ def goalgridworld_env(grid_file='room_5x5_empty.txt'):
     :return: the gym.GoalEnv environment
     """
     random_init_loc = False
-    env = GoalGridWorldEnv(grid_size=5, max_step=25, grid_file=grid_file, random_init_loc=random_init_loc)
+    random_goal_loc = False
+    env = GoalGridWorldEnv(grid_size=5, max_step=25, grid_file=grid_file, random_init_loc=random_init_loc,
+                           random_goal_loc=random_goal_loc)
 
     return env
 
@@ -24,17 +26,17 @@ def test_sorb():
     config = get_distance_test_agent_config(args=Namespace(
         env=goalgridworld_env,  # load the GoalGridWorld environment
         parent_folder='/tmp/mrl',  # where to store the logs
-        layers=(16,),  # shape of net
+        layers=(74,),  # shape of net
         max_episode_steps=max_episode_steps,  # maximum steps per episode
         batch_size=2,  # the batch size
-        warm_up=50,  # how many steps to take randomly in order to fill up the replay buffer
-        initial_explore=50,  # bugbug how is this distinct from the previous parameter?
+        warm_up=500,  # how many steps to take randomly in order to fill up the replay buffer
+        initial_explore=500,  # bugbug how is this distinct from the previous parameter?
         num_envs=1,  # number of training environments
         num_eval_envs=1,  # number of testing environments
         use_distributional_rl=True,  # whether to use distributional RL (if false, it will just use the clipping trick)
         target_network_update_freq=5,
         log_every=1000,
-        qvalue_lr=1e-5,
+        qvalue_lr=1e-4,
         optimize_every=1
 
     )

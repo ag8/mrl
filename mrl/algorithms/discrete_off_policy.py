@@ -780,6 +780,8 @@ def get_weighted_average_of_bins(bin_distribution):
     else:
         return sum / torch.sum(sm)
 
+    # torch.range(0, -len(bin_distribution), step=-1).dot(bin_distribution)
+
 
 class SorbDDQN(BaseQLearning):
     def __init__(self, num_atoms, batch_size):
@@ -822,7 +824,7 @@ class SorbDDQN(BaseQLearning):
     #
     #     return projected_distribution
 
-    def get_loss(self, q, q_next, rewards, dones):
+    def get_loss(self, q, q_next, rewards, actions, dones):
         if not isinstance(q, list):
             current_q_list = [q]
             target_q_list = [q_next]
@@ -835,8 +837,23 @@ class SorbDDQN(BaseQLearning):
         critic_loss_list = []
         for current_q, target_q in zip(current_q_list, target_q_list):
             if self.use_distributional_rl:
+                # Index q by actions
+                current_q = q.gather(1, actions.unsqueeze(-1).repeat([1, 20]).unsqueeze(1).to(torch.int64))
+
                 # Compute distributional td targets
-                target_q_probs = F.softmax(target_q, dim=1)
+                target_q_probs = F.softmax(target_q, dim=-1)
+
+                # self.get_weighted_average_of_bins()
+
+                # torch.range(0, -len(bin_distribution), step=-1).dot(bin_distribution)
+                max_indices = torch.argmax(
+                    torch.sum(torch.range(0, -19, step=-1)[None, None, :].repeat([2, 4, 1]) * target_q_probs, dim=-1),
+                    dim=-1)
+                target_q_probs.gather(1, max_indices[:, None, None].repeat([1, 1, 20]))
+
+                # target_q_probs = target_q_probs.gather(1, target_q.mean(2).argmin(1).unsqueeze(-1).repeat([1, 20]).unsqueeze(1))
+                # target_q_probs = target_q_probs.mean(dim=-)
+
                 batch_size = target_q_probs.shape[0]
                 action_dim = target_q_probs.shape[1]
                 one_hot = torch.zeros(batch_size, action_dim, self.num_atoms)
@@ -891,18 +908,20 @@ class SorbDDQN(BaseQLearning):
         #     best_actions = torch.argmax(self.qvalue(next_states), dim=-1, keepdim=True)
         #     q_next = q_next.gather(-1, best_actions)
         # else:
-        #     q_next = q_next.max(-1, keepdims=True)[0]  # Assuming action dim is the last dimension
+        # q_next = q_next.max(-1, keepdims=True)[0]  # Assuming action dim is the last dimension
 
         # Get the actual Q function for the real network on the current states
         q = self.qvalue(states.view(self.batch_size, -1)) \
             .view(self.batch_size, 4, self.num_atoms)
 
+
         # # Index the rows of the q-values by the batch-list of actions
         # # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
         # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
+        # q.gather(1, actions.unsqueeze(-1).repeat([1, 10]).unsqueeze(1).to(torch.int64))
 
         # Get the loss
-        loss = self.get_loss(q, q_next, rewards, dones)
+        loss = self.get_loss(q, q_next, rewards, actions, dones)
 
         # Clear previous gradients before the backward pass
         self.q_value_optimizer.zero_grad()
