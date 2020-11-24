@@ -787,31 +787,31 @@ class SorbDDQN(BaseQLearning):
         super().__init__()
 
         self.num_atoms = num_atoms
-        self.v_max = v_max
-        self.v_min = v_min
-        self.value_range = torch.tensor(v_max - v_min)
-        self.delta_z = (self.v_max - self.v_min) / float(self.num_atoms - 1)
-        self.z = [self.v_min + i * self.delta_z for i in range(self.num_atoms)]
+        # self.v_max = v_max
+        # self.v_min = v_min
+        # self.value_range = torch.tensor(v_max - v_min)
+        # self.delta_z = (self.v_max - self.v_min) / float(self.num_atoms - 1)
+        # self.z = [self.v_min + i * self.delta_z for i in range(self.num_atoms)]
 
-    def __project_next_state_value_distribution(self, states, actions, rewards, next_states, gammas, dones,
-                                                next_distribution, best_actions):
-        batch_size = states.size(0)
-        projected_distribution = torch.zeros(next_distribution.size())
-
-        for i in range(batch_size):
-            for j in range(self.num_atoms):
-                # Compute the projection of ˆTz_j onto the support {z_i}
-                Tz_j = (rewards[i] + (1 - dones[i]) * gammas[i] * self.z[j]).clamp(min=self.v_min, max=self.v_max)
-                b_j = (Tz_j - self.v_min) / self.delta_z
-                l, u = math.floor(b_j), math.ceil(b_j)
-
-                # Distribute probability of ˆTz_j
-                projected_distribution[i][actions[i].long()][int(l)] += (next_distribution[i][best_actions[i][j]][j] * (
-                        u - b_j)).squeeze(0)
-                projected_distribution[i][actions[i].long()][int(u)] += (next_distribution[i][best_actions[i][j]][j] * (
-                        b_j - l)).squeeze(0)
-
-        return projected_distribution
+    # def __project_next_state_value_distribution(self, states, actions, rewards, next_states, gammas, dones,
+    #                                             next_distribution, best_actions):
+    #     batch_size = states.size(0)
+    #     projected_distribution = torch.zeros(next_distribution.size())
+    #
+    #     for i in range(batch_size):
+    #         for j in range(self.num_atoms):
+    #             # Compute the projection of ˆTz_j onto the support {z_i}
+    #             Tz_j = (rewards[i] + (1 - dones[i]) * gammas[i] * self.z[j]).clamp(min=self.v_min, max=self.v_max)
+    #             b_j = (Tz_j - self.v_min) / self.delta_z
+    #             l, u = math.floor(b_j), math.ceil(b_j)
+    #
+    #             # Distribute probability of ˆTz_j
+    #             projected_distribution[i][actions[i].long()][int(l)] += (next_distribution[i][best_actions[i][j]][j] * (
+    #                     u - b_j)).squeeze(0)
+    #             projected_distribution[i][actions[i].long()][int(u)] += (next_distribution[i][best_actions[i][j]][j] * (
+    #                     b_j - l)).squeeze(0)
+    #
+    #     return projected_distribution
 
     def get_loss(self, q, q_next, rewards, gammas, dones):
         if not isinstance(q, list):
@@ -844,14 +844,19 @@ class SorbDDQN(BaseQLearning):
                 col_last = torch.sum(target_q_probs[:, :, -2:], dim=-1, keepdim=True)
                 shifted_target_q_probs = torch.cat([col_1, col_middle, col_last], dim=-1)
                 assert one_hot.shape == shifted_target_q_probs.shape
+
                 td_targets = torch.where(dones.bool(), one_hot, shifted_target_q_probs).detach()
 
-                critic_loss = torch.mean(-torch.sum(td_targets * torch.log_softmax(current_q, dim=1),
-                                                    dim=1))  # https://github.com/tensorflow/tensorflow/issues/21271
+                critic_loss = torch.mean(-torch.sum(td_targets * torch.log_softmax(current_q, dim=-1),
+                                                    dim=-1))  # https://gist.github.com/tejaskhot/cf3d087ce4708c422e68b3b747494b9f
             else:
                 critic_loss = super().critic_loss(current_q, target_q, rewards, dones)
+                raise NotImplementedError()
+
             critic_loss_list.append(critic_loss)
+
         critic_loss = torch.mean(torch.stack(critic_loss_list))
+
         return critic_loss
 
     def optimize_from_batch(self, states, actions, rewards, next_states, gammas,
@@ -868,7 +873,8 @@ class SorbDDQN(BaseQLearning):
         """
         # The Q_next value is what the target q network applied to the next states gives us
         # We detach it since it's not relevant for gradient computations
-        q_next = self.qvalue_target(next_states.view(self.agent.config.batch_size, -1)).detach().view(self.agent.config.batch_size, 4, 10)
+        q_next = self.qvalue_target(next_states.view(self.agent.config.batch_size, -1)).detach().view(
+            self.agent.config.batch_size, 4, 10)
 
         # # Minimum modification to get double q learning to work
         # # (Hasselt, Guez, and Silver, 2016: https://arxiv.org/pdf/1509.06461.pdf)
@@ -885,7 +891,7 @@ class SorbDDQN(BaseQLearning):
         # # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
         # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
 
-        # Get the squared bellman error
+        # Get the loss
         loss = self.get_loss(q, q_next, rewards, gammas, dones)
 
         # Clear previous gradients before the backward pass
