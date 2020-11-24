@@ -34,7 +34,8 @@ def test_sorb():
         use_distributional_rl=True,  # whether to use distributional RL (if false, it will just use the clipping trick)
         target_network_update_freq=5,
         log_every=1000,
-        qvalue_lr=1e-5
+        qvalue_lr=1e-5,
+        optimize_every=1
 
     )
     )
@@ -44,7 +45,7 @@ def test_sorb():
 
     t = time.time()
     print("Training agent...")
-    agent.train(num_steps=30000, render=False)
+    agent.train(num_steps=300000, render=False)
 
     # png_dir = '.'
     # images = []

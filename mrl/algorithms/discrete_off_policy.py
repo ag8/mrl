@@ -48,11 +48,13 @@ class QValuePolicy(mrl.Module):
 
         state = self.torch(state)
 
-        if self.use_qvalue_target:
-            q_values = self.numpy(self.qvalue_target(state.view(-1))).reshape(
-                [4, self.config.other_args['max_episode_steps']])
-        else:
-            q_values = self.numpy(self.qvalue(state.view(-1))).reshape([4, self.config.other_args['max_episode_steps']])
+        # if self.use_qvalue_target:
+        #     q_values = self.numpy(self.qvalue_target(state.view(-1))).reshape(
+        #         [4, self.config.other_args['max_episode_steps']])
+        # else:
+        #     q_values = self.numpy(self.qvalue(state.view(-1))).reshape([4, self.config.other_args['max_episode_steps']])
+
+        q_values = self.agent.algorithm.get_expected_q_values_from_flat(state)[0]
 
         if self.training and not greedy and np.random.random() < self.config.random_action_prob(
                 steps=self.config.env_steps):
@@ -773,7 +775,10 @@ def get_weighted_average_of_bins(bin_distribution):
     for i in range(len(sm)):
         sum += i * sm[i]
 
-    return sum / np.sum(sm)
+    if isinstance(sm, np.ndarray):
+        return sum / np.sum(sm)
+    else:
+        return sum / torch.sum(sm)
 
 
 class SorbDDQN(BaseQLearning):
@@ -817,7 +822,7 @@ class SorbDDQN(BaseQLearning):
     #
     #     return projected_distribution
 
-    def get_loss(self, q, q_next, rewards, gammas, dones):
+    def get_loss(self, q, q_next, rewards, dones):
         if not isinstance(q, list):
             current_q_list = [q]
             target_q_list = [q_next]
@@ -897,7 +902,7 @@ class SorbDDQN(BaseQLearning):
         # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
 
         # Get the loss
-        loss = self.get_loss(q, q_next, rewards, gammas, dones)
+        loss = self.get_loss(q, q_next, rewards, dones)
 
         # Clear previous gradients before the backward pass
         self.q_value_optimizer.zero_grad()
@@ -1006,17 +1011,24 @@ class SorbDDQN(BaseQLearning):
     def get_expected_q_values(self, state, aggregate='mean'):
         first_dim = state['observation'].shape[0]
 
+        # print("Getting expected q values...")
+
         # Get a list of q values.
         # We use an ensemble of networks, each of which returns a certain set of q values.
         # The q_values_list is a list of the predictions over all the networks.
 
         q_values = []
-        for network in [self.qvalue, self.qvaluee, self.qvalueee]:
-            q_value = network(torch.cat((state['observation'], state['goal']), dim=-1)
+        # for network in [self.qvalue, self.qvaluee, self.qvalueee]:
+        #     q_value = network(torch.cat((state['observation'], state['goal']), dim=-1)
+        #                       .squeeze(1).squeeze(0)
+        #                       .view(first_dim, -1))
+        #
+        #     q_values.append(q_value)
+
+        q_value = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
                               .squeeze(1).squeeze(0)
                               .view(first_dim, -1))
-
-            q_values.append(q_value)
+        q_values.append(q_value)
 
         # If we only have one network in the ensemble, its prediction is the entire list.
         if not isinstance(q_values, list):
@@ -1026,7 +1038,7 @@ class SorbDDQN(BaseQLearning):
 
         del q_values
 
-        self.use_distributional_rl = False  # bugbug get from config
+        self.use_distributional_rl = True  # bugbug get from config
 
         expected_q_values_list = []
         for q_values in q_values_list:
@@ -1045,6 +1057,7 @@ class SorbDDQN(BaseQLearning):
                 expected_q_values_list.append(expected_q_values)
             else:
                 expected_q_values_list.append(-q_values)
+                raise NotImplementedError()
 
         expected_q_values = torch.stack(expected_q_values_list)
 
@@ -1067,43 +1080,113 @@ class SorbDDQN(BaseQLearning):
 
         return expected_q_values
 
-    def critic_loss(self, current_q, target_q, reward, done):
-        if not isinstance(current_q, list):
-            current_q_list = [current_q]
-            target_q_list = [target_q]
+    def get_expected_q_values_from_flat(self, state, aggregate='mean'):
+        first_dim = state.shape[0]
+
+        # print("Getting expected q values...")
+
+        # Get a list of q values.
+        # We use an ensemble of networks, each of which returns a certain set of q values.
+        # The q_values_list is a list of the predictions over all the networks.
+
+        q_values = []
+        # for network in [self.qvalue, self.qvaluee, self.qvalueee]:
+        #     q_value = network(torch.cat((state['observation'], state['goal']), dim=-1)
+        #                       .squeeze(1).squeeze(0)
+        #                       .view(first_dim, -1))
+        #
+        #     q_values.append(q_value)
+
+        q_value = self.qvalue(state.view(first_dim, -1)).view(first_dim, 4, self.num_atoms)
+        q_values.append(q_value)
+
+        # If we only have one network in the ensemble, its prediction is the entire list.
+        if not isinstance(q_values, list):
+            q_values_list = [q_values]
         else:
-            current_q_list = current_q
-            target_q_list = target_q
+            q_values_list = q_values
 
-        critic_loss_list = []
-        for current_q, target_q in zip(current_q_list, target_q_list):
+        del q_values
+
+        self.use_distributional_rl = True  # bugbug get from config
+
+        expected_q_values_list = []
+        for q_values in q_values_list:
             if self.use_distributional_rl:
-                # Compute distributional td targets
-                target_q_probs = F.softmax(target_q, dim=1)
-                batch_size = target_q_probs.shape[0]
-                one_hot = torch.zeros(batch_size, self.num_bins)
-                one_hot[:, 0] = 1
-
-                # Calculate the shifted probabilities
-                # Fist column: Since episode didn't terminate, probability that the
-                # distance is 1 equals 0.
-                col_1 = torch.zeros((batch_size, 1))
-                # Middle columns: Simply the shifted probabilities.
-                col_middle = target_q_probs[:, :-2]
-                # Last column: Probability of taking at least n steps is sum of
-                # last two columns in unshifted predictions:
-                col_last = torch.sum(target_q_probs[:, -2:], dim=1, keepdim=True)
-                shifted_target_q_probs = torch.cat([col_1, col_middle, col_last], dim=1)
-                assert one_hot.shape == shifted_target_q_probs.shape
-                td_targets = torch.where(done.bool(), one_hot, shifted_target_q_probs).detach()
-
-                critic_loss = torch.mean(-torch.sum(td_targets * torch.log_softmax(current_q, dim=1),
-                                                    dim=1))  # https://github.com/tensorflow/tensorflow/issues/21271
+                q_probs = F.softmax(q_values, dim=1)
+                batch_size = q_probs.shape[0]
+                # NOTE: We want to compute the value of each bin, which is the
+                # negative distance. Without properly negating this, the actor is
+                # optimized to take the *worst* actions.
+                bin_range = torch.arange(1, self.num_atoms + 1, dtype=torch.float)
+                neg_bin_range = -1.0 * bin_range
+                tiled_bin_range = neg_bin_range.unsqueeze(0).repeat([batch_size, 4, 1])
+                assert q_probs.shape == tiled_bin_range.shape
+                # Take the inner product between these two tensors
+                expected_q_values = torch.sum(q_probs * tiled_bin_range, dim=0, keepdim=True)
+                expected_q_values_list.append(expected_q_values)
             else:
-                critic_loss = super().critic_loss(current_q, target_q, reward, done)
-            critic_loss_list.append(critic_loss)
-        critic_loss = torch.mean(torch.stack(critic_loss_list))
-        return critic_loss
+                expected_q_values_list.append(-q_values)
+                raise NotImplementedError()
+
+        expected_q_values = torch.stack(expected_q_values_list)
+
+        aggregate = 'mean'  # bugbug get from args
+
+        if aggregate is not None:
+            if aggregate == 'mean':
+                expected_q_values = torch.mean(expected_q_values, dim=0)
+            elif aggregate == 'min':
+                expected_q_values, _ = torch.min(expected_q_values, dim=0)
+            else:
+                raise ValueError
+
+        if not self.use_distributional_rl:
+            # Clip the q values if not using distributional RL. If using
+            # distributional RL, the q values are implicitly clipped.
+            min_q_value = -1.0 * self.num_atoms
+            max_q_value = 0.0
+            expected_q_values = torch.clamp(expected_q_values, min_q_value, max_q_value)
+
+        return expected_q_values
+
+    # def critic_loss(self, current_q, target_q, reward, done):
+    #     if not isinstance(current_q, list):
+    #         current_q_list = [current_q]
+    #         target_q_list = [target_q]
+    #     else:
+    #         current_q_list = current_q
+    #         target_q_list = target_q
+    #
+    #     critic_loss_list = []
+    #     for current_q, target_q in zip(current_q_list, target_q_list):
+    #         if self.use_distributional_rl:
+    #             # Compute distributional td targets
+    #             target_q_probs = F.softmax(target_q, dim=1)
+    #             batch_size = target_q_probs.shape[0]
+    #             one_hot = torch.zeros(batch_size, self.num_bins)
+    #             one_hot[:, 0] = 1
+    #
+    #             # Calculate the shifted probabilities
+    #             # Fist column: Since episode didn't terminate, probability that the
+    #             # distance is 1 equals 0.
+    #             col_1 = torch.zeros((batch_size, 1))
+    #             # Middle columns: Simply the shifted probabilities.
+    #             col_middle = target_q_probs[:, :-2]
+    #             # Last column: Probability of taking at least n steps is sum of
+    #             # last two columns in unshifted predictions:
+    #             col_last = torch.sum(target_q_probs[:, -2:], dim=1, keepdim=True)
+    #             shifted_target_q_probs = torch.cat([col_1, col_middle, col_last], dim=1)
+    #             assert one_hot.shape == shifted_target_q_probs.shape
+    #             td_targets = torch.where(done.bool(), one_hot, shifted_target_q_probs).detach()
+    #
+    #             critic_loss = torch.mean(-torch.sum(td_targets * torch.log_softmax(current_q, dim=1),
+    #                                                 dim=1))  # https://github.com/tensorflow/tensorflow/issues/21271
+    #         else:
+    #             critic_loss = super().critic_loss(current_q, target_q, reward, done)
+    #         critic_loss_list.append(critic_loss)
+    #     critic_loss = torch.mean(torch.stack(critic_loss_list))
+    #     return critic_loss
 
     def get_pairwise_dist(self, obs_vec, goal_vec=None, aggregate='mean', max_dist=7, masked=False):
         """Estimates the pairwise distances.
