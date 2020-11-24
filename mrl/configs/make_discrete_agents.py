@@ -429,7 +429,7 @@ def get_distance_test_agent_config(base_config=default_dqn_config,
                          module_state_normalizer=Normalizer(MeanStdNormalizer()),
                          module_replay=OnlineHERBuffer(),
                          module_action_noise=None,
-                         module_algorithm=SorbDDQN(num_atoms=args.max_episode_steps, v_max=0, v_min=-10)).items()
+                         module_algorithm=SorbDDQN(num_atoms=args.max_episode_steps, batch_size=config.batch_size)).items()
         if k not in config
     }
 
@@ -463,27 +463,27 @@ def get_distance_test_agent_config(base_config=default_dqn_config,
         'qvalue',
         lambda: Critic(
             FCBody(
-                e.state_dim * 2,
+                e.state_dim * 2,  # state_dim + goal_dim
                 args.layers,
                 layer_norm,
                 make_activ(config.activ)),
-            e.action_dim * args.max_episode_steps,
+            e.action_dim * args.max_episode_steps,  # num_action * num_bins
             use_layer_init=True)
     )
-    config.module_qvaluee = PytorchModel(
-        'qvaluee',
-        lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
-                              args.layers, layer_norm, make_activ(config.activ)),
-                       e.action_dim * args.max_episode_steps,
-                       use_layer_init=True)
-    )
-    config.module_qvalueee = PytorchModel(
-        'qvalueee',
-        lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
-                              args.layers, layer_norm, make_activ(config.activ)),
-                       e.action_dim * args.max_episode_steps,
-                       use_layer_init=True)
-    )
+    # config.module_qvaluee = PytorchModel(
+    #     'qvaluee',
+    #     lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
+    #                           args.layers, layer_norm, make_activ(config.activ)),
+    #                    e.action_dim * args.max_episode_steps,
+    #                    use_layer_init=True)
+    # )
+    # config.module_qvalueee = PytorchModel(
+    #     'qvalueee',
+    #     lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
+    #                           args.layers, layer_norm, make_activ(config.activ)),
+    #                    e.action_dim * args.max_episode_steps,
+    #                    use_layer_init=True)
+    # )
 
     # assert args.max_episode_steps is not None
     # config._max_episode_steps = args.max_episode_steps

@@ -49,7 +49,8 @@ class QValuePolicy(mrl.Module):
         state = self.torch(state)
 
         if self.use_qvalue_target:
-            q_values = self.numpy(self.qvalue_target(state.view(-1))).reshape([4, self.config.other_args['max_episode_steps']])
+            q_values = self.numpy(self.qvalue_target(state.view(-1))).reshape(
+                [4, self.config.other_args['max_episode_steps']])
         else:
             q_values = self.numpy(self.qvalue(state.view(-1))).reshape([4, self.config.other_args['max_episode_steps']])
 
@@ -776,7 +777,7 @@ def get_weighted_average_of_bins(bin_distribution):
 
 
 class SorbDDQN(BaseQLearning):
-    def __init__(self, num_atoms, v_max, v_min):
+    def __init__(self, num_atoms, batch_size):
         """
         Creates a Distributional Q Network (https://arxiv.org/abs/1707.06887)
 
@@ -786,7 +787,10 @@ class SorbDDQN(BaseQLearning):
         """
         super().__init__()
 
+        print("Hi")
+
         self.num_atoms = num_atoms
+        self.batch_size = batch_size
         # self.v_max = v_max
         # self.v_min = v_min
         # self.value_range = torch.tensor(v_max - v_min)
@@ -873,8 +877,8 @@ class SorbDDQN(BaseQLearning):
         """
         # The Q_next value is what the target q network applied to the next states gives us
         # We detach it since it's not relevant for gradient computations
-        q_next = self.qvalue_target(next_states.view(self.agent.config.batch_size, -1)).detach().view(
-            self.agent.config.batch_size, 4, self.config.other_args['max_episode_steps'])
+        q_next = self.qvalue_target(next_states.view(self.batch_size, -1)).detach() \
+            .view(self.batch_size, 4, self.num_atoms)
 
         # # Minimum modification to get double q learning to work
         # # (Hasselt, Guez, and Silver, 2016: https://arxiv.org/pdf/1509.06461.pdf)
@@ -885,7 +889,8 @@ class SorbDDQN(BaseQLearning):
         #     q_next = q_next.max(-1, keepdims=True)[0]  # Assuming action dim is the last dimension
 
         # Get the actual Q function for the real network on the current states
-        q = self.qvalue(states.view(self.agent.config.batch_size, -1)).view(self.agent.config.batch_size, 4, self.config.other_args['max_episode_steps'])
+        q = self.qvalue(states.view(self.batch_size, -1)) \
+            .view(self.batch_size, 4, self.num_atoms)
 
         # # Index the rows of the q-values by the batch-list of actions
         # # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
