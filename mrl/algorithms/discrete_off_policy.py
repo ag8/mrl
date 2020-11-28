@@ -846,8 +846,8 @@ class SorbDDQN(BaseQLearning):
                 # self.get_weighted_average_of_bins()
 
                 # torch.range(0, -len(bin_distribution), step=-1).dot(bin_distribution)
-                max_indices = torch.argmax(
-                    torch.sum(torch.range(0, -19, step=-1)[None, None, :].repeat([2, 4, 1]) * target_q_probs, dim=-1),
+                max_indices = torch.argmin(
+                    torch.sum(torch.range(0, 19)[None, None, :].repeat([2, 4, 1]) * target_q_probs, dim=-1),
                     dim=-1)
                 target_q_probs.gather(1, max_indices[:, None, None].repeat([1, 1, 20]))
 
