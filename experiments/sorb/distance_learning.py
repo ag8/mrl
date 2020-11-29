@@ -37,7 +37,8 @@ def test_sorb():
         target_network_update_freq=5,
         log_every=1000,
         qvalue_lr=1e-4,
-        optimize_every=1
+        optimize_every=1,
+        gamma=1
 
     )
     )

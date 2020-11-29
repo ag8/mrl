@@ -54,15 +54,16 @@ class QValuePolicy(mrl.Module):
         # else:
         #     q_values = self.numpy(self.qvalue(state.view(-1))).reshape([4, self.config.other_args['max_episode_steps']])
 
-        q_values = self.agent.algorithm.get_expected_q_values_from_flat(state)[0]
+        q_values = self.agent.algorithm.get_expected_q_values_from_flat(state)[0].detach()
 
         if self.training and not greedy and np.random.random() < self.config.random_action_prob(
                 steps=self.config.env_steps):
-            # print("The action space is: " + str(self.env.action_space) + " with " + str(self.env.action_space.n) + " choices")
             action = np.random.randint(self.env.action_space.n, size=[self.env.num_envs])
         else:
-            d_q_v = [get_weighted_average_of_bins(q_values[i]) for i in range(q_values.shape[0])]
-            action = [np.argmax(d_q_v, -1)]  # Convert to int
+            bin_range = torch.arange(1, self.agent.algorithm.num_atoms + 1, dtype=torch.float)
+            neg_bin_range = -1.0 * bin_range
+            weighted_directions = torch.sum(F.softmax(q_values, dim=-1) * neg_bin_range, dim=1, keepdim=True)
+            action = [np.argmax(weighted_directions)]  # Distances are negative, so argmax is shortest distance
 
         return action
 
@@ -825,6 +826,19 @@ class SorbDDQN(BaseQLearning):
     #     return projected_distribution
 
     def get_loss(self, q, q_next, rewards, actions, dones):
+        """
+        Gets the critic loss.
+
+        :param q: the q values of the current state-action pair
+        :param q_next: the target q values of the next state-action pair
+        :param rewards: rewards
+        :param actions: actions
+        :param dones: dones
+        :return: the loss
+        """
+
+        # If we don't have an ensemble and only get one of each q values,
+        # turn them into a list for consistency
         if not isinstance(q, list):
             current_q_list = [q]
             target_q_list = [q_next]
@@ -832,49 +846,101 @@ class SorbDDQN(BaseQLearning):
             current_q_list = q
             target_q_list = q_next
 
+        # bugbug: get from configuration
         self.use_distributional_rl = True
 
         critic_loss_list = []
         for current_q, target_q in zip(current_q_list, target_q_list):
             if self.use_distributional_rl:
-                # Index q by actions
-                current_q = q.gather(1, actions.unsqueeze(-1).repeat([1, 20]).unsqueeze(1).to(torch.int64))
+                batch_size, action_dim, num_atoms = current_q.shape
+
+                # Index the q values by the actions that were taken.
+                # The shape of q is [batch_size, second_dim, num_atoms]; so, from each batch,
+                # we need to get the [1, num_atoms] tensor of q values that corresponds to the
+                # action that was taken.
+                # Now, the shape of the actions tensor is [batch_size]--it's just a list of
+                # the action that was taken in each batch. For instance, if the batch size is 2,
+                # the actions tensor could be [2, 3]. By unsqueezing and repeating it, we turn it into
+                #   [[[2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]],
+                #    [[3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]]]
+                # if the number of atoms were 20.
+                # Then, we gather those along the first dimension of the q values, and we get
+                # precisely what we want--a batch of lists of q values for the actions taken.
+                # Its shape is therefore [batch_size, 1, num_atoms]--once again, the 1 coming
+                # from the fact that from second_dim options, we chose the action that was done.
+                current_q = q.gather(1, actions[:, None].repeat([1, num_atoms])[:, None].to(torch.int64))
 
                 # Compute distributional td targets
+                # The shape of target_q is [batch_size, second_dim, num_atoms].
+                # We compute the softmax along the last dimension (over the distribution)
+                # to get another tensor of shape [batch_size, second_dim, num_atoms].
                 target_q_probs = F.softmax(target_q, dim=-1)
 
-                # self.get_weighted_average_of_bins()
-
-                # torch.range(0, -len(bin_distribution), step=-1).dot(bin_distribution)
+                # Now, we need to index the target q values. The difference here, however,
+                # is that instead of of indexing by the actions that were actually taken,
+                # we need to index by the "argmax"--that is, the best action. So, let's compute
+                # the best indices: the ones for which the distribution for that action is
+                # skewed the most to the left--that is, towards small distances.
+                # torch.range(1, 20)[None, None, :].repeat([2, 4, 1]) simply gets us a
+                # [batch_size, second_dim, num_atoms] tensor where each row is a list of
+                # the bins, from 0 to 19. We then dot it with the actual probabilities
+                # by multiplying it by target_q_probs and summing it along the last axis.
+                # Thus, the probability in the zeroth bin has weight 0, and the probability
+                # in the last bin has weight 20. Now, target_q_probs are all positive due
+                # to the softmax, so we want to minimize the dot product's value to get the
+                # minimal distance to the goal; thus we apply torch.argmin.
                 max_indices = torch.argmin(
-                    torch.sum(torch.range(0, 19)[None, None, :].repeat([2, 4, 1]) * target_q_probs, dim=-1),
+                    torch.sum(
+                        torch.arange(1, num_atoms + 1)[None, None, :]
+                        .repeat([batch_size, action_dim, 1]) * target_q_probs, dim=-1),
                     dim=-1)
-                target_q_probs.gather(1, max_indices[:, None, None].repeat([1, 1, 20]))
+                # Now, since max_indices is just a list of length batch_size, we do the same
+                # gathering trick as for the current_q tensor indexing by actions above.
+                # The resulting shape is thus [batch_size, 1, num_atoms].
+                target_q_probs = target_q_probs.gather(1, max_indices[:, None, None].repeat([1, 1, num_atoms]))
 
-                # target_q_probs = target_q_probs.gather(1, target_q.mean(2).argmin(1).unsqueeze(-1).repeat([1, 20]).unsqueeze(1))
-                # target_q_probs = target_q_probs.mean(dim=-)
+                # Since we indexed by the best actions, we can squeeze the extra dimensions out
+                # in order to make the next steps slightly easier. Now, both current_q and
+                # target_q_probs have shape [batch_size, num_atoms].
+                current_q = current_q.squeeze()
+                target_q_probs = target_q_probs.squeeze()
 
-                batch_size = target_q_probs.shape[0]
-                action_dim = target_q_probs.shape[1]
-                one_hot = torch.zeros(batch_size, action_dim, self.num_atoms)
-                one_hot[:, :, 0] = 1
+                # Create the one-hot tensor.
+                one_hot = torch.zeros(batch_size, self.num_atoms)
+                one_hot[:, 0] = 1
 
                 # Calculate the shifted probabilities
+                # Here, we're basically shifting all the probabilities to the "right"
+                # by adding in a column of zeros in the leftmost bin, and adding
+                # the two rightmost probability bins together.
+
                 # Fist column: Since episode didn't terminate, probability that the
-                # distance is 1 equals 0.
-                col_1 = torch.zeros((batch_size, action_dim, 1))
+                # distance is 1 equals 0. We know that the episode didn't terminate
+                # because we apply the tensor of done states as a mask later.
+                col_1 = torch.zeros((batch_size, 1))
+
                 # Middle columns: Simply the shifted probabilities.
-                col_middle = target_q_probs[:, :, :-2]
+                col_middle = target_q_probs[:, :-2]
+
                 # Last column: Probability of taking at least n steps is sum of
                 # last two columns in unshifted predictions:
-                col_last = torch.sum(target_q_probs[:, :, -2:], dim=-1, keepdim=True)
-                shifted_target_q_probs = torch.cat([col_1, col_middle, col_last], dim=-1)
+                col_last = torch.sum(target_q_probs[:, -2:], dim=1, keepdim=True)
+
+                # Merge them all together
+                shifted_target_q_probs = torch.cat([col_1, col_middle, col_last], dim=1)
+
                 assert one_hot.shape == shifted_target_q_probs.shape
 
+                # The targets are computed as follows:
+                # If that episode is done, then we simply load in (1, 0, 0, 0,...) as the distribution,
+                # since there's a 100% chance that we have reached the goal.
+                # If the episode is not done, then we simply load in the target q probabilities.
                 td_targets = torch.where(dones.bool(), one_hot, shifted_target_q_probs).detach()
 
-                critic_loss = torch.mean(-torch.sum(td_targets * torch.log_softmax(current_q, dim=-1),
-                                                    dim=-1))  # https://gist.github.com/tejaskhot/cf3d087ce4708c422e68b3b747494b9f
+                # Finally, we compute the critic loss using "softmax cross entropy with logits"
+                # which we average over the batch.
+                critic_loss = torch.mean(-torch.sum(td_targets * torch.log_softmax(current_q, dim=1),
+                                                    dim=1))
             else:
                 critic_loss = super().critic_loss(current_q, target_q, rewards, dones)
                 raise NotImplementedError()
@@ -885,40 +951,27 @@ class SorbDDQN(BaseQLearning):
 
         return critic_loss
 
-    def optimize_from_batch(self, states, actions, rewards, next_states, gammas,
-                            dones=None):  # bugbug currently dqn optimizer
+    def optimize_from_batch(self, states, actions, rewards, next_states, gammas, dones):
         """
         The optimization method that gets called from _optimize in the BaseQLearning module.
 
-        :param states:
-        :param actions:
-        :param rewards:
-        :param next_states:
-        :param gammas:
+        :param states: the current states. size is [batch_size, ...state dims...]
+        :param actions: the actions taken. size is [batch_size].
+        :param rewards: the rewards obtained.
+        :param next_states: the next states. size is [batch_size, ...state dims...]
+        :param gammas: discounts.
         :return: nothing
         """
+        self.action_dim = self.agent.env.action_dim
+
         # The Q_next value is what the target q network applied to the next states gives us
         # We detach it since it's not relevant for gradient computations
         q_next = self.qvalue_target(next_states.view(self.batch_size, -1)).detach() \
-            .view(self.batch_size, 4, self.num_atoms)
-
-        # # Minimum modification to get double q learning to work
-        # # (Hasselt, Guez, and Silver, 2016: https://arxiv.org/pdf/1509.06461.pdf)
-        # if self.config.double_q:
-        #     best_actions = torch.argmax(self.qvalue(next_states), dim=-1, keepdim=True)
-        #     q_next = q_next.gather(-1, best_actions)
-        # else:
-        # q_next = q_next.max(-1, keepdims=True)[0]  # Assuming action dim is the last dimension
+            .view(self.batch_size, self.action_dim, self.num_atoms)
 
         # Get the actual Q function for the real network on the current states
         q = self.qvalue(states.view(self.batch_size, -1)) \
-            .view(self.batch_size, 4, self.num_atoms)
-
-
-        # # Index the rows of the q-values by the batch-list of actions
-        # # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
-        # q = q.gather(-1, actions.unsqueeze(-1).to(torch.int64))
-        # q.gather(1, actions.unsqueeze(-1).repeat([1, 10]).unsqueeze(1).to(torch.int64))
+            .view(self.batch_size, self.action_dim, self.num_atoms)
 
         # Get the loss
         loss = self.get_loss(q, q_next, rewards, actions, dones)
@@ -928,12 +981,6 @@ class SorbDDQN(BaseQLearning):
 
         # Run the backward pass
         loss.backward()
-
-        # Grad clipping
-        # if self.config.grad_norm_clipping > 0.:
-        #     torch.nn.utils.clip_grad_norm_(self.qvalue_params, self.config.grad_norm_clipping)
-        # if self.config.grad_value_clipping > 0.:
-        #     torch.nn.utils.clip_grad_value_(self.qvalue_params, self.config.grad_value_clipping)
 
         # Run the update
         self.q_value_optimizer.step()
@@ -1100,14 +1147,18 @@ class SorbDDQN(BaseQLearning):
         return expected_q_values
 
     def get_expected_q_values_from_flat(self, state, aggregate='mean'):
-        first_dim = state.shape[0]
+        """
+        Gets the expected values from a flattened state.
 
-        # print("Getting expected q values...")
+        :param state: the state. shape [?, ...state dims...]
+        :param aggregate: how to aggregate the ensemble predictions. default: mean
+        :return: the expected q values, of shape [batch_size, action_dims, num_atoms]
+        """
+        first_dim = state.shape[0]
 
         # Get a list of q values.
         # We use an ensemble of networks, each of which returns a certain set of q values.
         # The q_values_list is a list of the predictions over all the networks.
-
         q_values = []
         # for network in [self.qvalue, self.qvaluee, self.qvalueee]:
         #     q_value = network(torch.cat((state['observation'], state['goal']), dim=-1)
@@ -1116,7 +1167,9 @@ class SorbDDQN(BaseQLearning):
         #
         #     q_values.append(q_value)
 
-        q_value = self.qvalue(state.view(first_dim, -1)).view(first_dim, 4, self.num_atoms)
+        # Get the q values over the whole batch, if necessary.
+        q_value = self.qvalue(state.view(first_dim, -1)) \
+            .view(first_dim, self.action_dim, self.num_atoms)
         q_values.append(q_value)
 
         # If we only have one network in the ensemble, its prediction is the entire list.
@@ -1132,16 +1185,20 @@ class SorbDDQN(BaseQLearning):
         expected_q_values_list = []
         for q_values in q_values_list:
             if self.use_distributional_rl:
-                q_probs = F.softmax(q_values, dim=1)
+                # The q values have shape [batch_size, action_dim, num_atoms].
+                # We take the softmax along the last dimension to get the probability distributions.
+                q_probs = F.softmax(q_values, dim=-1)
                 batch_size = q_probs.shape[0]
+
                 # NOTE: We want to compute the value of each bin, which is the
                 # negative distance. Without properly negating this, the actor is
                 # optimized to take the *worst* actions.
                 bin_range = torch.arange(1, self.num_atoms + 1, dtype=torch.float)
                 neg_bin_range = -1.0 * bin_range
-                tiled_bin_range = neg_bin_range.unsqueeze(0).repeat([batch_size, 4, 1])
+                tiled_bin_range = neg_bin_range.unsqueeze(0).repeat([batch_size, self.action_dim, 1])
                 assert q_probs.shape == tiled_bin_range.shape
-                # Take the inner product between these two tensors
+
+                # Take the inner product between the bins and the (q-value-derived) probabilities
                 expected_q_values = torch.sum(q_probs * tiled_bin_range, dim=0, keepdim=True)
                 expected_q_values_list.append(expected_q_values)
             else:
@@ -1149,8 +1206,6 @@ class SorbDDQN(BaseQLearning):
                 raise NotImplementedError()
 
         expected_q_values = torch.stack(expected_q_values_list)
-
-        aggregate = 'mean'  # bugbug get from args
 
         if aggregate is not None:
             if aggregate == 'mean':
