@@ -30,7 +30,7 @@ def test_sorb():
         parent_folder='/tmp/mrl',  # where to store the logs
         layers=(74,),  # shape of net
         max_episode_steps=max_episode_steps,  # maximum steps per episode
-        batch_size=2,  # the batch size
+        batch_size=80,  # the batch size
         warm_up=500,  # how many steps to take randomly in order to fill up the replay buffer
         initial_explore=500,  # bugbug how is this distinct from the previous parameter?
         num_envs=1,  # number of training environments
