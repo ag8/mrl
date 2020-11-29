@@ -57,7 +57,7 @@ class QValuePolicy(mrl.Module):
         # else:
         #     q_values = self.numpy(self.qvalue(state.view(-1))).reshape([4, self.config.other_args['max_episode_steps']])
 
-        q_values = self.agent.algorithm.get_expected_q_values_from_flat(state)[0].detach()
+        q_values = self.agent.algorithm.get_expected_q_values_from_flat(state)[0]
         q_values = F.softmax(q_values, dim=-1)
 
         if self.training and not greedy and np.random.random() < self.config.random_action_prob(
@@ -70,7 +70,7 @@ class QValuePolicy(mrl.Module):
 
             # self.illustrate(unflattened, q_values, weighted_directions)
 
-            action = [np.argmax(weighted_directions)]  # Distances are negative, so argmax is shortest distance
+            action = [torch.argmax(weighted_directions)]  # Distances are negative, so argmax is shortest distance
 
         return action
 
@@ -966,7 +966,7 @@ class SorbDDQN(BaseQLearning):
 
         # The Q_next value is what the target q network applied to the next states gives us
         # We detach it since it's not relevant for gradient computations
-        q_next = self.qvalue_target(next_states.view(self.batch_size, -1)).detach() \
+        q_next = self.qvalue_target(next_states.view(self.batch_size, -1)) \
             .view(self.batch_size, self.action_dim, self.num_atoms)
 
         # Get the actual Q function for the real network on the current states
