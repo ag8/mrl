@@ -1,3 +1,5 @@
+import imageio
+
 from envs.goalgridworld.goal_grid import GoalGridWorldEnv
 from mrl.configs.make_discrete_agents import *
 
@@ -20,7 +22,7 @@ def goalgridworld_env(grid_file='room_3x3_empty.txt'):
 def test_sorb():
     print("Running SoRB!")
 
-    max_episode_steps = 20
+    max_episode_steps = 5
 
     print("Making agent...")
     config = get_distance_test_agent_config(args=Namespace(
@@ -48,7 +50,7 @@ def test_sorb():
 
     t = time.time()
     print("Training agent...")
-    agent.train(num_steps=300000, render=False)
+    agent.train(num_steps=30000, render=False)
 
     # png_dir = '.'
     # images = []

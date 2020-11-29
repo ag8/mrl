@@ -25,6 +25,8 @@ class QValuePolicy(mrl.Module):
             ],
             locals=locals())
 
+        self.count = 1
+
     def _setup(self):
         self.use_qvalue_target = self.config.get('use_qvalue_target') or False
 
@@ -39,6 +41,7 @@ class QValuePolicy(mrl.Module):
             elif hasattr(self, 'ag_curiosity'):
                 state = self.ag_curiosity.relabel_state(state)
 
+        unflattened = state
         state = flatten_state(state)  # flatten goal environments
         if hasattr(self, 'state_normalizer'):
             state = self.state_normalizer(state, update=self.training)
@@ -55,6 +58,7 @@ class QValuePolicy(mrl.Module):
         #     q_values = self.numpy(self.qvalue(state.view(-1))).reshape([4, self.config.other_args['max_episode_steps']])
 
         q_values = self.agent.algorithm.get_expected_q_values_from_flat(state)[0].detach()
+        q_values = F.softmax(q_values, dim=-1)
 
         if self.training and not greedy and np.random.random() < self.config.random_action_prob(
                 steps=self.config.env_steps):
@@ -62,10 +66,64 @@ class QValuePolicy(mrl.Module):
         else:
             bin_range = torch.arange(1, self.agent.algorithm.num_atoms + 1, dtype=torch.float)
             neg_bin_range = -1.0 * bin_range
-            weighted_directions = torch.sum(F.softmax(q_values, dim=-1) * neg_bin_range, dim=1, keepdim=True)
+            weighted_directions = torch.sum(q_values * neg_bin_range, dim=1, keepdim=True)
+
+            # self.illustrate(unflattened, q_values, weighted_directions)
+
             action = [np.argmax(weighted_directions)]  # Distances are negative, so argmax is shortest distance
 
         return action
+
+    def illustrate(self, state, q_values, directional_q_values):
+        # First, draw what's happening in terms of location and goals
+        fig, axs = plt.subplots(3, 3)
+
+        axs[0, 0].axis('off')
+        axs[0, 2].axis('off')
+        axs[2, 0].axis('off')
+        axs[2, 2].axis('off')
+        axs[1, 1].matshow(self.get_state_illustration(state))
+
+        axs[1, 0].set_title("E: " + str(round(float(directional_q_values[0]), 2)))
+        axs[1, 0].bar(range(len(q_values[0])), -q_values[0].numpy())  # Left
+
+        axs[2, 1].set_title("E: " + str(round(float(directional_q_values[1]), 2)))
+        axs[2, 1].bar(range(len(q_values[1])), -q_values[1].numpy())  # Down
+
+        axs[1, 2].set_title("E: " + str(round(float(directional_q_values[2]), 2)))
+        axs[1, 2].bar(range(len(q_values[2])), -q_values[2].numpy())  # Right
+
+        axs[0, 1].set_title("E: " + str(round(float(directional_q_values[3]), 2)))
+        axs[0, 1].bar(range(len(q_values[3])), -q_values[3].numpy())  # Up
+
+        fig.suptitle("Non-random step " + str(self.count))
+
+        plt.savefig("step_" + str(self.count).zfill(3) + ".png")
+        self.count += 1
+        # plt.show()
+        plt.close(fig)
+
+    def get_state_illustration(self, state):  # TODO: move this to a more appropriate place
+        state = squeeze_dict(state)
+
+        final_matrix = np.zeros((state['observation'].shape[0], state['observation'].shape[1]))
+
+        dim1, dim2, dim3 = state['observation'].shape
+
+        for i in range(dim1):
+            for j in range(dim2):
+                if state['observation'][i][j][1] == 1:  # it's the agent
+                    final_matrix[i][j] = 200
+                elif state['observation'][i][j][2] == 1:  # it's a wall
+                    final_matrix[i][j] = 100
+
+                if state['desired_goal'][i][j][1] == 1:  # it's the goal!
+                    if final_matrix[i][j] == 200:  # reached it
+                        final_matrix[i][j] = 0
+                    else:
+                        final_matrix[i][j] = 50
+
+        return final_matrix
 
 
 class RandomPolicy(mrl.Module):
@@ -707,64 +765,6 @@ def squeeze_dict(dict):
         dict[key] = dict[key].squeeze()
 
     return dict
-
-
-def get_state_illustration(state):
-    state = squeeze_dict(state)
-
-    final_matrix = np.zeros((state['observation'].shape[0], state['observation'].shape[1]))
-
-    dim1, dim2, dim3 = state['observation'].shape
-
-    for i in range(dim1):
-        for j in range(dim2):
-            if state['observation'][i][j][1] == 1:  # it's the agent
-                final_matrix[i][j] = 200
-            elif state['observation'][i][j][2] == 1:  # it's a wall
-                final_matrix[i][j] = 100
-
-            if state['goal'][i][j][1] == 1:  # it's the goal!
-                if final_matrix[i][j] == 200:  # reached it
-                    final_matrix[i][j] = 0
-                else:
-                    final_matrix[i][j] = 50
-
-    return final_matrix
-
-
-global count
-count = 0
-
-
-def illustrate(state, q_values, directional_q_values):
-    global count
-
-    # First, draw what's happening in terms of location and goals
-    fig, axs = plt.subplots(3, 3)
-
-    axs[0, 0].axis('off')
-    axs[0, 2].axis('off')
-    axs[2, 0].axis('off')
-    axs[2, 2].axis('off')
-    axs[1, 1].matshow(get_state_illustration(state))
-
-    axs[1, 0].set_title("E: " + str(round(float(directional_q_values[0]), 2)))
-    axs[1, 0].bar(range(len(q_values[0])), -q_values[0].numpy())  # Left
-
-    axs[2, 1].set_title("E: " + str(round(float(directional_q_values[1]), 2)))
-    axs[2, 1].bar(range(len(q_values[1])), -q_values[1].numpy())  # Down
-
-    axs[1, 2].set_title("E: " + str(round(float(directional_q_values[2]), 2)))
-    axs[1, 2].bar(range(len(q_values[2])), -q_values[2].numpy())  # Right
-
-    axs[0, 1].set_title("E: " + str(round(float(directional_q_values[3]), 2)))
-    axs[0, 1].bar(range(len(q_values[3])), -q_values[3].numpy())  # Up
-
-    fig.suptitle("Non-random step " + str(count))
-
-    plt.savefig("step_" + str(count).zfill(3) + ".png")
-    # plt.show()
-    plt.close(fig)
 
 
 def get_weighted_average_of_bins(bin_distribution):
