@@ -1084,17 +1084,17 @@ class SorbDDQN(BaseQLearning):
         # The q_values_list is a list of the predictions over all the networks.
 
         q_values = []
-        # for network in [self.qvalue, self.qvaluee, self.qvalueee]:
-        #     q_value = network(torch.cat((state['observation'], state['goal']), dim=-1)
-        #                       .squeeze(1).squeeze(0)
-        #                       .view(first_dim, -1))
-        #
-        #     q_values.append(q_value)
-
-        q_value = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
+        for network in [self.qvalue, self.qvaluee, self.qvalueee]:
+            q_value = network(torch.cat((state['observation'], state['goal']), dim=-1)
                               .squeeze(1).squeeze(0)
                               .view(first_dim, -1))
-        q_values.append(q_value)
+
+            q_values.append(q_value)
+
+        # q_value = self.qvalue(torch.cat((state['observation'], state['goal']), dim=-1)
+        #                       .squeeze(1).squeeze(0)
+        #                       .view(first_dim, -1))
+        # q_values.append(q_value)
 
         # If we only have one network in the ensemble, its prediction is the entire list.
         if not isinstance(q_values, list):

@@ -470,20 +470,20 @@ def get_distance_test_agent_config(base_config=default_dqn_config,
             e.action_dim * args.max_episode_steps,  # num_action * num_bins
             use_layer_init=True)
     )
-    # config.module_qvaluee = PytorchModel(
-    #     'qvaluee',
-    #     lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
-    #                           args.layers, layer_norm, make_activ(config.activ)),
-    #                    e.action_dim * args.max_episode_steps,
-    #                    use_layer_init=True)
-    # )
-    # config.module_qvalueee = PytorchModel(
-    #     'qvalueee',
-    #     lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
-    #                           args.layers, layer_norm, make_activ(config.activ)),
-    #                    e.action_dim * args.max_episode_steps,
-    #                    use_layer_init=True)
-    # )
+    config.module_qvaluee = PytorchModel(
+        'qvaluee',
+        lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
+                              args.layers, layer_norm, make_activ(config.activ)),
+                       e.action_dim * args.max_episode_steps,
+                       use_layer_init=True)
+    )
+    config.module_qvalueee = PytorchModel(
+        'qvalueee',
+        lambda: Critic(FCBody(e.state_dim * 2,  # * 2 because of stacked goal
+                              args.layers, layer_norm, make_activ(config.activ)),
+                       e.action_dim * args.max_episode_steps,
+                       use_layer_init=True)
+    )
 
     # assert args.max_episode_steps is not None
     # config._max_episode_steps = args.max_episode_steps
